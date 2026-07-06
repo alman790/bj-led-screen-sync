@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cwchar>
+#include <thread>
 
 namespace {
 COLORREF colorRef(unsigned char r, unsigned char g, unsigned char b) {
@@ -121,9 +122,7 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             GetClientRect(hwnd, &rect);
             resize(rect.right - rect.left, rect.bottom - rect.top);
             capture_ = new GdiScreenCapture(settings_);
-            appendLog(L"Connecting to BJ_LED...");
-            connected_ = led_.connect(nullptr);
-            appendLog(connected_ ? L"Strip ready, live writing enabled" : L"Preview only, strip not connected");
+            appendLog(L"Ready");
             SetTimer(hwnd, 1, std::max(8, 1000 / settings_.fps), nullptr);
             break;
         }
@@ -144,6 +143,11 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             break;
         case WM_TIMER:
             tick();
+            break;
+        case WM_APP + 1:
+            connected_ = wparam != 0;
+            appendLog(wparam ? L"Strip ready, live writing enabled" : L"BJ_LED service not found");
+            InvalidateRect(hwnd, nullptr, FALSE);
             break;
         case WM_PAINT: {
             PAINTSTRUCT ps;
@@ -296,12 +300,20 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
         }
         if (contains(max127Rect_, x, y)) settings_.maxChannel = 127;
         if (contains(max255Rect_, x, y)) settings_.maxChannel = 255;
-        if (contains(scanRect_, x, y)) appendLog(L"Found BJ_LED  RSSI -54");
-        if (contains(connectRect_, x, y)) {
-            appendLog(L"Connecting to BJ_LED...");
-            connected_ = led_.connect(nullptr);
-            appendLog(connected_ ? L"Strip ready, live writing enabled" : L"Preview only, strip not connected");
-        }
+            if (contains(scanRect_, x, y)) {
+                appendLog(L"Scanning paired BLE devices...");
+                appendLog(L"Select Connect to open the BJ_LED GATT service");
+            }
+            if (contains(connectRect_, x, y)) {
+                appendLog(L"Connecting to BJ_LED...");
+                if (!writeInFlight_.exchange(true)) {
+                    std::thread([this] {
+                        const bool ok = led_.connect(nullptr);
+                        writeInFlight_ = false;
+                        PostMessageW(hwnd_, WM_APP + 1, ok ? 1 : 0, 0);
+                    }).detach();
+                }
+            }
     } else if (activeSlider_ >= 0) {
         updateSlider(x);
     }
@@ -352,10 +364,18 @@ void WinApp::tick() {
     bj::RGB color = selectedOutputColor(frameAnalysis_.output);
     smoothed_ = outputMode_ == 0 && hasSmoothed_ ? bj::smooth(smoothed_, color, settings_.smoothing) : color;
     hasSmoothed_ = true;
-    if (led_.isReady() && (bj::distance(lastSent_, smoothed_) >= settings_.threshold || !connected_)) {
-        led_.write(smoothed_, settings_.maxChannel);
-        lastSent_ = smoothed_;
-        connected_ = true;
+    const auto now = std::chrono::steady_clock::now();
+    const bool forceRefresh = now - lastWriteTime_ >= std::chrono::milliseconds(250);
+    const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
+    if (led_.isReady() && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
+        const bj::RGB color = smoothed_;
+        const int maxChannel = settings_.maxChannel;
+        lastSent_ = color;
+        lastWriteTime_ = now;
+        std::thread([this, color, maxChannel] {
+            led_.write(color, maxChannel);
+            writeInFlight_ = false;
+        }).detach();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

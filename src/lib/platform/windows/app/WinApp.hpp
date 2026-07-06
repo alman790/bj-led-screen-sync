@@ -16,7 +16,9 @@
 #include "lib/platform/windows/capture/GdiScreenCapture.hpp"
 #include "lib/platform/windows/led/WinBleLed.hpp"
 
+#include <atomic>
 #include <array>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -79,9 +81,11 @@ private:
     bj::RGB smoothed_;
     bj::RGB lastSent_;
     bj::FrameAnalysis frameAnalysis_;
+    std::chrono::steady_clock::time_point lastWriteTime_ {};
     bool hasSmoothed_ = false;
     int outputMode_ = 0;
     bool connected_ = false;
+    std::atomic_bool writeInFlight_ {false};
     GdiScreenCapture* capture_ = nullptr;
     WinBleLed led_;
     std::vector<std::wstring> logs_;

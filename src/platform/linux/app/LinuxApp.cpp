@@ -12,6 +12,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -122,7 +123,7 @@ public:
 
         appendLog("Connecting to BJ_LED...");
         connected_ = !address_.empty() && led_.connect(address_);
-        appendLog(connected_ ? "Strip ready, live writing enabled" : "Preview only, strip not connected");
+        appendLog(connected_ ? "Strip ready, live writing enabled" : "Click Scan or pass a Bluetooth address");
         rebuildLayout();
 
         auto nextFrame = std::chrono::steady_clock::now();
@@ -273,11 +274,10 @@ private:
             }
             if (contains(max127Rect_, x, y)) settings_.maxChannel = 127;
             if (contains(max255Rect_, x, y)) settings_.maxChannel = 255;
-            if (contains(scanRect_, x, y)) appendLog("Found BJ_LED  RSSI -54");
+            if (contains(scanRect_, x, y)) scanDevices();
             if (contains(connectRect_, x, y)) {
                 appendLog("Connecting to BJ_LED...");
-                connected_ = !address_.empty() && led_.connect(address_);
-                appendLog(connected_ ? "Strip ready, live writing enabled" : "Preview only, strip not connected");
+                connectDevice();
             }
         } else if (activeSlider_ >= 0) {
             updateSlider(x);
@@ -310,10 +310,52 @@ private:
         const bj::RGB target = selectedOutputColor(outputMode_, frame_.output);
         smoothed_ = outputMode_ == 0 && hasSmoothed_ ? bj::smooth(smoothed_, target, settings_.smoothing) : target;
         hasSmoothed_ = true;
-        if (led_.isReady() && bj::distance(lastSent_, smoothed_) >= settings_.threshold) {
-            led_.write(smoothed_, settings_.maxChannel);
-            lastSent_ = smoothed_;
+        const auto now = std::chrono::steady_clock::now();
+        const bool forceRefresh = now - lastWriteTime_ >= std::chrono::milliseconds(250);
+        const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
+        if (led_.isReady() && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
+            const bj::RGB color = smoothed_;
+            const int maxChannel = settings_.maxChannel;
+            lastSent_ = color;
+            lastWriteTime_ = now;
+            std::thread([this, color, maxChannel] {
+                led_.write(color, maxChannel);
+                writeInFlight_ = false;
+            }).detach();
         }
+    }
+
+    void scanDevices() {
+        appendLog("Scanning paired Bluetooth devices...");
+        FILE* pipe = popen("bluetoothctl devices 2>/dev/null", "r");
+        if (!pipe) {
+            appendLog("bluetoothctl unavailable");
+            return;
+        }
+        char line[256];
+        while (fgets(line, sizeof(line), pipe)) {
+            std::string text(line);
+            if (text.find("BJ_LED") == std::string::npos && text.find("BJ_LED_M") == std::string::npos) continue;
+            const size_t firstSpace = text.find(' ');
+            const size_t secondSpace = firstSpace == std::string::npos ? std::string::npos : text.find(' ', firstSpace + 1);
+            if (firstSpace != std::string::npos && secondSpace != std::string::npos) {
+                address_ = text.substr(firstSpace + 1, secondSpace - firstSpace - 1);
+                appendLog("Found " + address_);
+                pclose(pipe);
+                return;
+            }
+        }
+        pclose(pipe);
+        appendLog("BJ_LED not found. Pair it in system Bluetooth first.");
+    }
+
+    void connectDevice() {
+        if (address_.empty()) {
+            appendLog("No device address. Click Scan after pairing BJ_LED.");
+            return;
+        }
+        connected_ = led_.connect(address_);
+        appendLog(connected_ ? "Strip ready, live writing enabled" : "Could not connect to BJ_LED");
     }
 
     std::string address_;
@@ -324,8 +366,10 @@ private:
     bj::FrameAnalysis frame_;
     bj::RGB smoothed_;
     bj::RGB lastSent_;
+    std::chrono::steady_clock::time_point lastWriteTime_ {};
     bool hasSmoothed_ = false;
     bool connected_ = false;
+    std::atomic_bool writeInFlight_ {false};
     int outputMode_ = 0;
     int activeSlider_ = -1;
     int width_ = 940;
