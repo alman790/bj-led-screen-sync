@@ -82,8 +82,8 @@ int WinApp::run(HINSTANCE instance) {
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        1220,
-        860,
+        960,
+        690,
         nullptr,
         nullptr,
         instance_,
@@ -113,7 +113,7 @@ LRESULT CALLBACK WinApp::windowProcThunk(HWND hwnd, UINT message, WPARAM wparam,
 LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
         case WM_CREATE: {
-            titleFont_ = CreateFontW(48, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            titleFont_ = CreateFontW(36, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             labelFont_ = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             textFont_ = CreateFontW(21, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             monoFont_ = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
@@ -163,37 +163,35 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
 }
 
 void WinApp::resize(int width, int height) {
-    width_ = std::max(width, 980);
-    height_ = std::max(height, 680);
+    width_ = std::max(width, 940);
+    height_ = std::max(height, 650);
     rebuildLayout();
 }
 
 void WinApp::rebuildLayout() {
     const int left = 36;
-    const int labelW = 150;
-    const int fieldX = left + labelW + 10;
-    const int rightX = width_ - 320;
-    deviceRect_ = {fieldX, 118, 450, 32};
-    scanRect_ = {fieldX + 480, 118, 140, 32};
-    connectRect_ = {fieldX + 636, 118, 160, 32};
-    displayRect_ = {fieldX, 188, 330, 32};
-    modeRect_ = {fieldX + 460, 188, 230, 32};
-    max127Rect_ = {fieldX + 720, 188, 84, 32};
-    max255Rect_ = {fieldX + 804, 188, 84, 32};
-    previewRect_ = {rightX + 70, 320, 170, 170};
-    logRect_ = {36, height_ - 145, width_ - 72, 112};
+    const int fieldX = 150;
+    deviceRect_ = {fieldX, 92, 350, 32};
+    scanRect_ = {518, 92, 110, 32};
+    connectRect_ = {640, 92, 122, 32};
+    displayRect_ = {fieldX, 144, 250, 32};
+    modeRect_ = {498, 144, 176, 32};
+    max127Rect_ = {704, 145, 64, 30};
+    max255Rect_ = {768, 145, 64, 30};
+    previewRect_ = {730, 244, 132, 132};
+    logRect_ = {28, height_ - 126, width_ - 56, 106};
 
     const wchar_t* labels[5] {L"FPS", L"Brightness", L"Saturation", L"Smoothing", L"Threshold"};
-    const float mins[5] {5.0f, 0.20f, 0.50f, 0.0f, 0.0f};
-    const float maxs[5] {30.0f, 1.0f, 2.4f, 1.0f, 30.0f};
+    const float mins[5] {1.0f, 0.15f, 0.50f, 0.01f, 0.0f};
+    const float maxs[5] {30.0f, 1.0f, 2.5f, 1.0f, 35.0f};
     const float values[5] {float(settings_.fps), settings_.brightness, settings_.saturation, settings_.smoothing, settings_.threshold};
     for (int i = 0; i < 5; ++i) {
-        sliders_[i] = {{fieldX, 300 + i * 70, width_ - fieldX - 430, 28}, labels[i], mins[i], maxs[i], values[i]};
+            sliders_[i] = {{fieldX, 248 + i * 54, 480, 26}, labels[i], mins[i], maxs[i], values[i]};
     }
 
-    const int segY = std::min(height_ - 205, 650);
-    int segX = left;
-    const int widths[5] {108, 104, 118, 104, 118};
+    const int segY = 466;
+    int segX = 28;
+    const int widths[5] {78, 82, 92, 82, 92};
     for (int i = 0; i < 5; ++i) {
         outputRects_[i] = {segX, segY, widths[i], 32};
         segX += widths[i] + 4;
@@ -211,13 +209,13 @@ void WinApp::paint(HDC dc) {
     FillRect(dc, &client, bg);
     DeleteObject(bg);
 
-    roundFill(dc, {36, 26, 54, 54}, colorRef(4, 15, 38), 18);
-    drawText(dc, textFont_, L"BJ", {50, 40, 32, 28}, colorRef(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    drawText(dc, titleFont_, L"BJ LED Ambilight", {110, 30, 560, 70}, colorRef(245, 245, 247), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    roundFill(dc, {30, 28, 38, 38}, colorRef(4, 15, 38), 14);
+    drawText(dc, textFont_, L"BJ", {34, 35, 30, 26}, colorRef(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, titleFont_, L"BJ LED Ambilight", {80, 24, 430, 50}, colorRef(245, 245, 247), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    drawText(dc, labelFont_, L"Device", {36, 116, 140, 34}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    drawText(dc, labelFont_, L"Display", {36, 186, 140, 34}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    drawText(dc, labelFont_, L"Mode", {deviceRect_.x + 560, 188, 100, 34}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, labelFont_, L"Device", {28, 94, 110, 28}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, labelFont_, L"Display", {28, 146, 110, 28}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, labelFont_, L"Mode", {428, 146, 70, 28}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     roundFill(dc, deviceRect_, colorRef(73, 76, 77));
     roundFill(dc, displayRect_, colorRef(73, 76, 77));
@@ -236,14 +234,14 @@ void WinApp::paint(HDC dc) {
     drawText(dc, textFont_, L"255", max255Rect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     for (const Slider& slider : sliders_) {
-        const int rowY = slider.rect.y - 6;
-        drawText(dc, labelFont_, slider.label, {36, rowY - 2, 140, 32}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        roundFill(dc, {slider.rect.x, slider.rect.y + 11, slider.rect.w, 7}, colorRef(82, 86, 88), 7);
+        const int rowY = slider.rect.y;
+        drawText(dc, labelFont_, slider.label, {28, rowY + 2, 116, 24}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        roundFill(dc, {slider.rect.x, slider.rect.y + 10, slider.rect.w, 6}, colorRef(82, 86, 88), 7);
         const int knob = sliderX(slider);
-        roundFill(dc, {slider.rect.x, slider.rect.y + 11, std::max(1, knob - slider.rect.x), 7}, colorRef(30, 132, 240), 7);
-        roundFill(dc, {knob - 13, slider.rect.y, 26, 26}, colorRef(232, 234, 236), 26);
+        roundFill(dc, {slider.rect.x, slider.rect.y + 10, std::max(1, knob - slider.rect.x), 6}, colorRef(30, 132, 240), 7);
+        roundFill(dc, {knob - 11, slider.rect.y + 2, 22, 22}, colorRef(232, 234, 236), 24);
         std::wstring value = formatFloat(slider.value);
-        drawText(dc, textFont_, value.c_str(), {slider.rect.x + slider.rect.w + 56, rowY - 2, 90, 32}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        drawText(dc, textFont_, value.c_str(), {650, rowY + 2, 62, 24}, colorRef(245, 245, 245), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     }
 
     const wchar_t* modes[5] {L"Auto", L"Red", L"Green", L"Blue", L"White"};
@@ -252,15 +250,16 @@ void WinApp::paint(HDC dc) {
         drawText(dc, textFont_, modes[i], outputRects_[i], colorRef(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
-    roundFill(dc, previewRect_, colorRef(smoothed_), 30);
+    roundFill(dc, previewRect_, colorRef(smoothed_), 18);
     frameRect(dc, previewRect_, colorRef(34, 87, 120));
-    const int sw = 36;
+    const int sw = 28;
+    const int gap = 8;
     const std::array<bj::RGB, 4> corners = frameAnalysis_.corners;
     const std::array<Rect, 4> swatches {{
-        {previewRect_.x - 48, previewRect_.y, sw, sw},
-        {previewRect_.x + previewRect_.w + 12, previewRect_.y, sw, sw},
-        {previewRect_.x - 48, previewRect_.y + previewRect_.h - sw, sw, sw},
-        {previewRect_.x + previewRect_.w + 12, previewRect_.y + previewRect_.h - sw, sw, sw},
+        {previewRect_.x - sw - gap, previewRect_.y + previewRect_.h - sw, sw, sw},
+        {previewRect_.x + previewRect_.w + gap, previewRect_.y + previewRect_.h - sw, sw, sw},
+        {previewRect_.x - sw - gap, previewRect_.y, sw, sw},
+        {previewRect_.x + previewRect_.w + gap, previewRect_.y, sw, sw},
     }};
     for (int i = 0; i < 4; ++i) {
         roundFill(dc, swatches[i], colorRef(corners[i]), 10);
@@ -269,7 +268,7 @@ void WinApp::paint(HDC dc) {
 
     wchar_t rgb[80];
     std::swprintf(rgb, 80, L"RGB %u %u %u", smoothed_.r, smoothed_.g, smoothed_.b);
-    drawText(dc, labelFont_, rgb, {previewRect_.x - 10, previewRect_.y + previewRect_.h + 24, previewRect_.w + 20, 36}, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, labelFont_, rgb, {694, 385, 210, 26}, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     roundFill(dc, logRect_, colorRef(22, 27, 29), 14);
     int y = logRect_.y + 12;
@@ -319,7 +318,7 @@ void WinApp::updateSlider(int x) {
     const float t = std::clamp(float(x - slider.rect.x) / std::max(1, slider.rect.w), 0.0f, 1.0f);
     slider.value = slider.min + (slider.max - slider.min) * t;
     if (activeSlider_ == 0) {
-        settings_.fps = std::clamp(int(slider.value + 0.5f), 5, 30);
+        settings_.fps = std::clamp(int(slider.value + 0.5f), 1, 30);
         slider.value = float(settings_.fps);
         KillTimer(hwnd_, 1);
         SetTimer(hwnd_, 1, std::max(8, 1000 / settings_.fps), nullptr);

@@ -133,8 +133,8 @@ public:
                 XNextEvent(display_, &event);
                 if (event.type == Expose) draw();
                 if (event.type == ConfigureNotify) {
-                    width_ = std::max(980, event.xconfigure.width);
-                    height_ = std::max(680, event.xconfigure.height);
+                    width_ = std::max(940, event.xconfigure.width);
+                    height_ = std::max(650, event.xconfigure.height);
                     rebuildLayout();
                     draw();
                 }
@@ -156,30 +156,28 @@ public:
 
 private:
     void rebuildLayout() {
-        const int left = 36;
-        const int labelW = 150;
-        const int fieldX = left + labelW + 10;
-        deviceRect_ = {fieldX, 118, 450, 32};
-        scanRect_ = {fieldX + 480, 118, 140, 32};
-        connectRect_ = {fieldX + 636, 118, 160, 32};
-        displayRect_ = {fieldX, 188, 330, 32};
-        modeRect_ = {fieldX + 460, 188, 230, 32};
-        max127Rect_ = {fieldX + 720, 188, 84, 32};
-        max255Rect_ = {fieldX + 804, 188, 84, 32};
-        previewRect_ = {width_ - 250, 320, 170, 170};
-        logRect_ = {36, height_ - 145, width_ - 72, 112};
+        const int fieldX = 150;
+        deviceRect_ = {fieldX, 92, 350, 32};
+        scanRect_ = {518, 92, 110, 32};
+        connectRect_ = {640, 92, 122, 32};
+        displayRect_ = {fieldX, 144, 250, 32};
+        modeRect_ = {498, 144, 176, 32};
+        max127Rect_ = {704, 145, 64, 30};
+        max255Rect_ = {768, 145, 64, 30};
+        previewRect_ = {730, 244, 132, 132};
+        logRect_ = {28, height_ - 126, width_ - 56, 106};
 
         const char* labels[5] {"FPS", "Brightness", "Saturation", "Smoothing", "Threshold"};
-        const float mins[5] {5.0f, 0.20f, 0.50f, 0.0f, 0.0f};
-        const float maxs[5] {30.0f, 1.0f, 2.4f, 1.0f, 30.0f};
+        const float mins[5] {1.0f, 0.15f, 0.50f, 0.01f, 0.0f};
+        const float maxs[5] {30.0f, 1.0f, 2.5f, 1.0f, 35.0f};
         const float values[5] {float(settings_.fps), settings_.brightness, settings_.saturation, settings_.smoothing, settings_.threshold};
         for (int i = 0; i < 5; ++i) {
-            sliders_[i] = {{fieldX, 300 + i * 70, width_ - fieldX - 430, 28}, labels[i], mins[i], maxs[i], values[i]};
+            sliders_[i] = {{fieldX, 248 + i * 54, 480, 26}, labels[i], mins[i], maxs[i], values[i]};
         }
 
-        const int segY = std::min(height_ - 205, 650);
-        int segX = left;
-        const int widths[5] {108, 104, 118, 104, 118};
+        const int segY = 466;
+        int segX = 28;
+        const int widths[5] {78, 82, 92, 82, 92};
         for (int i = 0; i < 5; ++i) {
             outputRects_[i] = {segX, segY, widths[i], 32};
             segX += widths[i] + 4;
@@ -198,13 +196,13 @@ private:
 
     void draw() {
         fill(display_, window_, gc_, {0, 0, width_, height_}, rgb(display_, 37, 40, 41));
-        fill(display_, window_, gc_, {36, 26, 54, 54}, rgb(display_, 4, 15, 38));
-        text(display_, window_, gc_, textFont_, 53, 61, "BJ", rgb(display_, 255, 255, 255));
-        text(display_, window_, gc_, titleFont_, 110, 68, "BJ LED Ambilight", rgb(display_, 245, 245, 247));
+        fill(display_, window_, gc_, {30, 28, 38, 38}, rgb(display_, 4, 15, 38));
+        text(display_, window_, gc_, textFont_, 36, 55, "BJ", rgb(display_, 255, 255, 255));
+        text(display_, window_, gc_, titleFont_, 80, 60, "BJ LED Ambilight", rgb(display_, 245, 245, 247));
 
-        text(display_, window_, gc_, labelFont_, 36, 140, "Device", rgb(display_, 245, 245, 245));
-        text(display_, window_, gc_, labelFont_, 36, 210, "Display", rgb(display_, 245, 245, 245));
-        text(display_, window_, gc_, labelFont_, deviceRect_.x + 560, 210, "Mode", rgb(display_, 245, 245, 245));
+        text(display_, window_, gc_, labelFont_, 28, 116, "Device", rgb(display_, 245, 245, 245));
+        text(display_, window_, gc_, labelFont_, 28, 168, "Display", rgb(display_, 245, 245, 245));
+        text(display_, window_, gc_, labelFont_, 428, 168, "Mode", rgb(display_, 245, 245, 245));
 
         drawButton(deviceRect_, connected_ ? "BJ_LED  RSSI -54" : "No device yet");
         drawButton(scanRect_, "Scan");
@@ -215,14 +213,14 @@ private:
         drawButton(max255Rect_, "255", settings_.maxChannel == 255);
 
         for (const Slider& slider : sliders_) {
-            text(display_, window_, gc_, labelFont_, 36, slider.rect.y + 18, slider.label, rgb(display_, 245, 245, 245));
-            fill(display_, window_, gc_, {slider.rect.x, slider.rect.y + 12, slider.rect.w, 6}, rgb(display_, 82, 86, 88));
+            text(display_, window_, gc_, labelFont_, 28, slider.rect.y + 20, slider.label, rgb(display_, 245, 245, 245));
+            fill(display_, window_, gc_, {slider.rect.x, slider.rect.y + 10, slider.rect.w, 6}, rgb(display_, 82, 86, 88));
             const int knob = sliderX(slider);
-            fill(display_, window_, gc_, {slider.rect.x, slider.rect.y + 12, std::max(1, knob - slider.rect.x), 6}, rgb(display_, 30, 132, 240));
+            fill(display_, window_, gc_, {slider.rect.x, slider.rect.y + 10, std::max(1, knob - slider.rect.x), 6}, rgb(display_, 30, 132, 240));
             fill(display_, window_, gc_, {knob - 11, slider.rect.y + 2, 22, 22}, rgb(display_, 232, 234, 236));
             char value[32];
             std::snprintf(value, sizeof(value), "%.2f", slider.value);
-            text(display_, window_, gc_, textFont_, slider.rect.x + slider.rect.w + 56, slider.rect.y + 19, value, rgb(display_, 245, 245, 245));
+            text(display_, window_, gc_, textFont_, 650, slider.rect.y + 20, value, rgb(display_, 245, 245, 245));
         }
 
         const char* modes[5] {"Auto", "Red", "Green", "Blue", "White"};
@@ -230,12 +228,13 @@ private:
 
         fill(display_, window_, gc_, previewRect_, rgb(display_, smoothed_));
         border(display_, window_, gc_, previewRect_, rgb(display_, 34, 87, 120));
-        const int sw = 36;
+        const int sw = 28;
+        const int gap = 8;
         const std::array<Rect, 4> swatches {{
-            {previewRect_.x - 48, previewRect_.y, sw, sw},
-            {previewRect_.x + previewRect_.w + 12, previewRect_.y, sw, sw},
-            {previewRect_.x - 48, previewRect_.y + previewRect_.h - sw, sw, sw},
-            {previewRect_.x + previewRect_.w + 12, previewRect_.y + previewRect_.h - sw, sw, sw},
+            {previewRect_.x - sw - gap, previewRect_.y + previewRect_.h - sw, sw, sw},
+            {previewRect_.x + previewRect_.w + gap, previewRect_.y + previewRect_.h - sw, sw, sw},
+            {previewRect_.x - sw - gap, previewRect_.y, sw, sw},
+            {previewRect_.x + previewRect_.w + gap, previewRect_.y, sw, sw},
         }};
         for (int i = 0; i < 4; ++i) {
             fill(display_, window_, gc_, swatches[i], rgb(display_, frame_.corners[i]));
@@ -244,7 +243,7 @@ private:
 
         char rgbText[80];
         std::snprintf(rgbText, sizeof(rgbText), "RGB %u %u %u", smoothed_.r, smoothed_.g, smoothed_.b);
-        text(display_, window_, gc_, labelFont_, previewRect_.x + 26, previewRect_.y + previewRect_.h + 40, rgbText, rgb(display_, 245, 245, 245));
+        text(display_, window_, gc_, labelFont_, 726, 402, rgbText, rgb(display_, 245, 245, 245));
 
         fill(display_, window_, gc_, logRect_, rgb(display_, 22, 27, 29));
         int y = logRect_.y + 28;
@@ -291,7 +290,7 @@ private:
         const float t = std::clamp(float(x - slider.rect.x) / std::max(1, slider.rect.w), 0.0f, 1.0f);
         slider.value = slider.min + (slider.max - slider.min) * t;
         if (activeSlider_ == 0) {
-            settings_.fps = std::clamp(int(slider.value + 0.5f), 5, 30);
+            settings_.fps = std::clamp(int(slider.value + 0.5f), 1, 30);
             slider.value = float(settings_.fps);
         } else if (activeSlider_ == 1) {
             settings_.brightness = slider.value;
@@ -329,8 +328,8 @@ private:
     bool connected_ = false;
     int outputMode_ = 0;
     int activeSlider_ = -1;
-    int width_ = 1200;
-    int height_ = 820;
+    int width_ = 940;
+    int height_ = 650;
     Rect deviceRect_;
     Rect scanRect_;
     Rect connectRect_;

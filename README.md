@@ -50,6 +50,13 @@ updates to the LED strip over Bluetooth.
 The shared color pipeline is implemented in C++ and reused across platforms.
 Platform-specific code is isolated under `src/platform` and `src/macos`.
 
+## Security Note
+
+Windows antivirus tools can warn about new unsigned installers or portable
+builds, especially before a release has reputation history. The project does
+not include malware: the source is public, release artifacts are built by
+GitHub Actions, and checksums are published with each release.
+
 ## LED Protocol
 
 The current BJ_LED protocol support writes one RGB color to the strip:

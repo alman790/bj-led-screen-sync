@@ -53,7 +53,7 @@ struct Settings {
     float brightness = 1.0f;
     float saturation = 1.35f;
     float smoothing = 0.55f;
-    float threshold = 2.0f;
+    float threshold = 1.0f;
     SampleMode mode = SampleMode::Balanced;
 };
 
