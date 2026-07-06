@@ -1,54 +1,54 @@
 {
   "name": "BJ LED Ambilight",
-  "latest": "0.1.0",
+  "latest": "0.1.1",
   "repository": "alman790/bj-led-screen-sync",
   "versions": [
     {
-      "version": "0.1.0",
-      "tag": "v0.1.0",
-      "base_url": "https://github.com/alman790/bj-led-screen-sync/releases/download/v0.1.0/",
+      "version": "0.1.1",
+      "tag": "v0.1.1",
+      "base_url": "https://github.com/alman790/bj-led-screen-sync/releases/download/v0.1.1/",
       "files": [
         {
           "platform": "macos",
           "type": "dmg",
-          "name": "BJLEDAmbilight-0.1.0-macos.dmg",
-          "sha256": "78118e6617ad81ae87cd31cc9835f3ccf6deb07e8676c262a01f788756a5f068"
+          "name": "BJLEDAmbilight-0.1.1-macos.dmg",
+          "sha256": ""
         },
         {
           "platform": "macos",
           "type": "zip",
-          "name": "BJLEDAmbilight-0.1.0-macos.zip",
-          "sha256": "98b57d1e579a41e8222851763f7355d20f38adcb39cb88446aace2c0d2506d17"
+          "name": "BJLEDAmbilight-0.1.1-macos.zip",
+          "sha256": ""
         },
         {
           "platform": "linux",
           "type": "deb",
-          "name": "bj-led-ambilight_0.1.0_amd64.deb",
+          "name": "bj-led-ambilight_0.1.1_amd64.deb",
           "sha256": ""
         },
         {
           "platform": "linux",
           "type": "tar.gz",
-          "name": "bj-led-ambilight-0.1.0-linux-amd64.tar.gz",
+          "name": "bj-led-ambilight-0.1.1-linux-amd64.tar.gz",
           "sha256": ""
         },
         {
           "platform": "windows",
           "type": "setup.exe",
-          "name": "BJLEDAmbilight-0.1.0-windows-x64-setup.exe",
+          "name": "BJLEDAmbilight-0.1.1-windows-x64-setup.exe",
           "sha256": ""
         },
         {
           "platform": "windows",
           "type": "zip",
-          "name": "BJLEDAmbilight-0.1.0-windows-x64.zip",
+          "name": "BJLEDAmbilight-0.1.1-windows-x64.zip",
           "sha256": ""
         },
         {
           "platform": "source",
           "type": "zip",
-          "name": "BJLEDAmbilight-0.1.0-source.zip",
-          "sha256": "c799df8e35fc91d18a8999c7a270e18020d288281cc905b191d2aab1d35a6426"
+          "name": "BJLEDAmbilight-0.1.1-source.zip",
+          "sha256": ""
         }
       ]
     }
