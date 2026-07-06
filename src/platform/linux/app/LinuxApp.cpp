@@ -194,11 +194,13 @@ private:
         const float mins[5] {1.0f, 0.15f, 0.50f, 0.01f, 0.0f};
         const float maxs[5] {30.0f, 1.0f, 2.5f, 1.0f, 35.0f};
         const float values[5] {float(settings_.fps), settings_.brightness, settings_.saturation, settings_.smoothing, settings_.threshold};
+        const int sliderStartY = 224;
+        const int sliderGap = 50;
         for (int i = 0; i < 5; ++i) {
-            sliders_[i] = {{fieldX, 248 + i * 54, 480, 26}, labels[i], mins[i], maxs[i], values[i]};
+            sliders_[i] = {{fieldX, sliderStartY + i * sliderGap, 480, 26}, labels[i], mins[i], maxs[i], values[i]};
         }
 
-        const int segY = 466;
+        const int segY = 482;
         int segX = 28;
         const int widths[5] {78, 82, 92, 82, 92};
         for (int i = 0; i < 5; ++i) {
@@ -209,7 +211,7 @@ private:
 
     void appendLog(const std::string& line) {
         logs_.push_back(line);
-        if (logs_.size() > 6) logs_.erase(logs_.begin());
+        if (logs_.size() > 4) logs_.erase(logs_.begin());
     }
 
     const char* modeTitle() const {
@@ -286,7 +288,7 @@ private:
 
         fill(display_, target, gc_, logRect_, rgb(display_, 22, 27, 29));
         setClip(display_, gc_, {logRect_.x + 8, logRect_.y + 8, logRect_.w - 16, logRect_.h - 16});
-        int y = logRect_.y + 28;
+        int y = logRect_.y + 24;
         for (const std::string& line : logs_) {
             text(display_, target, gc_, monoFont_, logRect_.x + 16, y, line.c_str(), rgb(display_, 222, 226, 229));
             y += 18;

@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cwchar>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include "platform/windows/resource.h"
@@ -66,6 +68,38 @@ std::wstring formatFloat(float value) {
     wchar_t text[32];
     std::swprintf(text, 32, L"%.2f", value);
     return text;
+}
+
+std::wstring trimAsciiOutput(std::string text) {
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ' || text.back() == '\t')) {
+        text.pop_back();
+    }
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return L"";
+    if (first > 0) text.erase(0, first);
+    return std::wstring(text.begin(), text.end());
+}
+
+std::wstring scanBleAdvertisements() {
+    const char* command =
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+        "\"$ErrorActionPreference='SilentlyContinue';"
+        "$watcher=[Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementWatcher]::new();"
+        "$script:hit='';"
+        "$handler=[Windows.Foundation.TypedEventHandler[Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementWatcher,Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementReceivedEventArgs]]{"
+        "param($s,$e);$n=$e.Advertisement.LocalName;"
+        "if($n -like '*BJ_LED*'){$script:hit=('BJ_LED advertisement '+$e.BluetoothAddress);$s.Stop()}"
+        "};"
+        "$null=$watcher.add_Received($handler);"
+        "$watcher.Start();Start-Sleep -Seconds 6;$watcher.Stop();"
+        "if($script:hit){$script:hit}\"";
+    FILE* pipe = _popen(command, "r");
+    if (!pipe) return L"";
+    std::string output;
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe)) output += buffer;
+    _pclose(pipe);
+    return trimAsciiOutput(output);
 }
 
 template <typename T>
@@ -179,12 +213,18 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             appendLog(wparam ? L"Strip ready, live writing enabled" : L"BJ_LED service not found");
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
-        case WM_APP + 2:
+        case WM_APP + 2: {
+            std::unique_ptr<std::wstring> detail(reinterpret_cast<std::wstring*>(lparam));
             deviceFound_ = wparam != 0;
             deviceLabel_ = deviceFound_ ? L"BJ_LED  ready" : L"No BJ_LED found";
-            appendLog(deviceFound_ ? L"Found BJ_LED service" : L"BJ_LED not found. Pair it in Windows Bluetooth first.");
+            if (deviceFound_ && detail && !detail->empty()) {
+                appendLog(detail->c_str());
+            } else {
+                appendLog(deviceFound_ ? L"Found BJ_LED service" : L"BJ_LED not found. Pair it in Windows Bluetooth first.");
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
+        }
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
@@ -272,11 +312,13 @@ void WinApp::rebuildLayout() {
     const float mins[5] {1.0f, 0.15f, 0.50f, 0.01f, 0.0f};
     const float maxs[5] {30.0f, 1.0f, 2.5f, 1.0f, 35.0f};
     const float values[5] {float(settings_.fps), settings_.brightness, settings_.saturation, settings_.smoothing, settings_.threshold};
+    const int sliderStartY = 224;
+    const int sliderGap = 50;
     for (int i = 0; i < 5; ++i) {
-            sliders_[i] = {{fieldX, 248 + i * 54, 480, 26}, labels[i], mins[i], maxs[i], values[i]};
+        sliders_[i] = {{fieldX, sliderStartY + i * sliderGap, 480, 26}, labels[i], mins[i], maxs[i], values[i]};
     }
 
-    const int segY = 466;
+    const int segY = 482;
     int segX = 28;
     const int widths[5] {78, 82, 92, 82, 92};
     for (int i = 0; i < 5; ++i) {
@@ -287,7 +329,7 @@ void WinApp::rebuildLayout() {
 
 void WinApp::appendLog(const wchar_t* line) {
     logs_.push_back(line);
-    if (logs_.size() > 6) logs_.erase(logs_.begin());
+    if (logs_.size() > 4) logs_.erase(logs_.begin());
 }
 
 void WinApp::paint(HDC dc) {
@@ -359,13 +401,14 @@ void WinApp::paint(HDC dc) {
 
     roundFill(dc, logRect_, colorRef(22, 27, 29), 14);
     HRGN clip = CreateRectRgn(logRect_.x + 8, logRect_.y + 8, logRect_.x + logRect_.w - 8, logRect_.y + logRect_.h - 8);
+    const int saved = SaveDC(dc);
     SelectClipRgn(dc, clip);
-    int y = logRect_.y + 12;
+    int y = logRect_.y + 14;
     for (const std::wstring& line : logs_) {
-        drawText(dc, monoFont_, line.c_str(), {logRect_.x + 16, y, logRect_.w - 32, 22}, colorRef(222, 226, 229), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        y += 22;
+        drawText(dc, monoFont_, line.c_str(), {logRect_.x + 16, y, logRect_.w - 32, 20}, colorRef(222, 226, 229), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y += 20;
     }
-    SelectClipRgn(dc, nullptr);
+    RestoreDC(dc, saved);
     DeleteObject(clip);
 }
 
@@ -399,12 +442,19 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
             if (contains(scanRect_, x, y) && !scanInFlight_.exchange(true)) {
                 deviceLabel_ = L"Scanning...";
                 appendLog(L"Scanning paired BLE GATT services...");
-                appendLog(L"Windows requires BJ_LED to be paired in Bluetooth Settings first.");
+                appendLog(L"Listening for BJ_LED BLE advertisements...");
                 std::thread([this] {
                     WinBleLed probe;
-                    const bool ok = probe.connect(nullptr);
+                    bool ok = probe.connect(nullptr);
+                    auto detail = std::make_unique<std::wstring>();
+                    if (ok) {
+                        *detail = L"Found BJ_LED GATT service";
+                    } else {
+                        *detail = scanBleAdvertisements();
+                        ok = !detail->empty();
+                    }
                     scanInFlight_ = false;
-                    PostMessageW(hwnd_, WM_APP + 2, ok ? 1 : 0, 0);
+                    PostMessageW(hwnd_, WM_APP + 2, ok ? 1 : 0, reinterpret_cast<LPARAM>(detail.release()));
                 }).detach();
             }
             if (contains(connectRect_, x, y) && !connectInFlight_.exchange(true)) {
