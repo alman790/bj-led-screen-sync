@@ -1,5 +1,11 @@
 #include "lib/platform/windows/app/WinApp.hpp"
 
+namespace {
+COLORREF makeColorRef(unsigned char r, unsigned char g, unsigned char b) {
+    return COLORREF(unsigned(r) | (unsigned(g) << 8U) | (unsigned(b) << 16U));
+}
+}
+
 int WinApp::run(HINSTANCE instance) {
     instance_ = instance;
     WNDCLASSW wc {};
@@ -7,7 +13,7 @@ int WinApp::run(HINSTANCE instance) {
     wc.hInstance = instance_;
     wc.lpszClassName = L"BJLEDAmbilightWindow";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(24, 26, 30));
+    wc.hbrBackground = CreateSolidBrush(makeColorRef(24, 26, 30));
     RegisterClassW(&wc);
 
     hwnd_ = CreateWindowExW(
@@ -94,7 +100,7 @@ void WinApp::tick() {
     wchar_t text[96];
     wsprintfW(text, L"RGB %u %u %u", smoothed_.r, smoothed_.g, smoothed_.b);
     SetWindowTextW(status_, text);
-    HBRUSH brush = CreateSolidBrush(RGB(smoothed_.r, smoothed_.g, smoothed_.b));
+    HBRUSH brush = CreateSolidBrush(makeColorRef(smoothed_.r, smoothed_.g, smoothed_.b));
     HDC dc = GetDC(swatch_);
     RECT rect;
     GetClientRect(swatch_, &rect);

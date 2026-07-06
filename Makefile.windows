@@ -1,5 +1,5 @@
 CXX=cl
-CXXFLAGS=/std:c++20 /O2 /EHsc /Isrc
+CXXFLAGS=/std:c++20 /O2 /EHsc /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Isrc
 LDFLAGS=user32.lib gdi32.lib BluetoothApis.lib SetupAPI.lib
 SRC=src\platform\windows\main.cpp src\platform\windows\app\WinApp.cpp src\platform\windows\capture\GdiScreenCapture.cpp src\platform\windows\led\WinBleLed.cpp
 
