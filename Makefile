@@ -8,7 +8,7 @@ DIST_DIR := dist
 CORE_SMOKE := build/core_smoke
 INSTALL_DIR := $(HOME)/Applications
 INSTALLED_APP := $(INSTALL_DIR)/$(APP_NAME).app
-SIGN_IDENTITY := BJ LED Ambilight Local
+SIGN_IDENTITY ?= BJ LED Ambilight Local
 
 CXX := clang++
 CXXFLAGS := -std=c++20 -O3 -flto -Isrc -fobjc-arc -Wall -Wextra -Wpedantic
