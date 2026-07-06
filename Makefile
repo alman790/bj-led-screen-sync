@@ -6,6 +6,8 @@ SRC := src/main.mm src/macos/AppDelegate.mm src/macos/DisplayCapture.mm src/maco
 VERSION := $(shell cat VERSION.txt 2>/dev/null || echo 0.1.0)
 DIST_DIR := dist
 CORE_SMOKE := build/core_smoke
+CORE_TESTS := build/core_tests
+COVERAGE_BIN := build/coverage/core_tests
 INSTALL_DIR := $(HOME)/Applications
 INSTALLED_APP := $(INSTALL_DIR)/$(APP_NAME).app
 SIGN_IDENTITY ?= BJ LED Ambilight Local
@@ -15,7 +17,7 @@ CXXFLAGS := -std=c++20 -O3 -flto -Isrc -fobjc-arc -Wall -Wextra -Wpedantic
 CORE_CXXFLAGS := -std=c++20 -O3 -flto -Isrc -Wall -Wextra -Wpedantic
 LDFLAGS := -framework Cocoa -framework CoreBluetooth -framework CoreGraphics -framework ApplicationServices
 
-.PHONY: all app signing-identity install-local run dev-run run-installed reset-permissions test lint format dist-macos dist-macos-installers dist-source release release-manifest installers clean linux windows
+.PHONY: all app signing-identity install-local run dev-run run-installed reset-permissions test coverage lint format dist-macos dist-macos-installers dist-source release release-manifest installers clean linux windows
 
 all: app
 
@@ -54,8 +56,21 @@ $(CORE_SMOKE): src/core_smoke.cpp src/lib/bj_core.hpp
 	mkdir -p build
 	$(CXX) $(CORE_CXXFLAGS) src/core_smoke.cpp -o "$(CORE_SMOKE)"
 
-test: $(CORE_SMOKE)
+$(CORE_TESTS): tests/core_tests.cpp src/lib/bj_core.hpp
+	mkdir -p build
+	$(CXX) $(CORE_CXXFLAGS) tests/core_tests.cpp -o "$(CORE_TESTS)"
+
+test: $(CORE_SMOKE) $(CORE_TESTS)
 	"$(CORE_SMOKE)"
+	"$(CORE_TESTS)"
+
+coverage:
+	mkdir -p build/coverage
+	$(CXX) -std=c++20 -O0 -g -Isrc -Wall -Wextra -Wpedantic -fprofile-instr-generate -fcoverage-mapping tests/core_tests.cpp -o "$(COVERAGE_BIN)"
+	LLVM_PROFILE_FILE="build/coverage/core_tests.profraw" "$(COVERAGE_BIN)"
+	xcrun llvm-profdata merge -sparse build/coverage/core_tests.profraw -o build/coverage/core_tests.profdata
+	xcrun llvm-cov report "$(COVERAGE_BIN)" -instr-profile=build/coverage/core_tests.profdata src/lib/bj_core.hpp | tee build/coverage/core_report.txt
+	python3 -c 'import sys; rows=[line.split() for line in open("build/coverage/core_report.txt") if line.startswith("TOTAL")]; pct=float(rows[-1][9].rstrip("%")) if rows else 0.0; print(f"core line coverage: {pct:.2f}%"); sys.exit(0 if pct >= 99.0 else 1)'
 
 lint:
 	git diff --check
