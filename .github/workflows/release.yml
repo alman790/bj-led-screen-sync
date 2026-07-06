@@ -37,7 +37,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist/*linux*
+          path: |
+            dist/*linux*
+            dist/*.deb
 
   windows:
     name: Windows artifacts
