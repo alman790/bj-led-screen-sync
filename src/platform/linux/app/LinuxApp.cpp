@@ -63,20 +63,34 @@ unsigned long rgb(Display* display, unsigned char r, unsigned char g, unsigned c
     return rgb(display, bj::RGB(r, g, b));
 }
 
-void fill(Display* display, Window window, GC gc, const Rect& rect, unsigned long color) {
+void fill(Display* display, Drawable target, GC gc, const Rect& rect, unsigned long color) {
     XSetForeground(display, gc, color);
-    XFillRectangle(display, window, gc, rect.x, rect.y, unsigned(rect.w), unsigned(rect.h));
+    XFillRectangle(display, target, gc, rect.x, rect.y, unsigned(rect.w), unsigned(rect.h));
 }
 
-void border(Display* display, Window window, GC gc, const Rect& rect, unsigned long color) {
+void border(Display* display, Drawable target, GC gc, const Rect& rect, unsigned long color) {
     XSetForeground(display, gc, color);
-    XDrawRectangle(display, window, gc, rect.x, rect.y, unsigned(rect.w), unsigned(rect.h));
+    XDrawRectangle(display, target, gc, rect.x, rect.y, unsigned(rect.w), unsigned(rect.h));
 }
 
-void text(Display* display, Window window, GC gc, XFontStruct* font, int x, int y, const char* value, unsigned long color) {
+void text(Display* display, Drawable target, GC gc, XFontStruct* font, int x, int y, const char* value, unsigned long color) {
     if (font) XSetFont(display, gc, font->fid);
     XSetForeground(display, gc, color);
-    XDrawString(display, window, gc, x, y, value, int(std::char_traits<char>::length(value)));
+    XDrawString(display, target, gc, x, y, value, int(std::char_traits<char>::length(value)));
+}
+
+void setClip(Display* display, GC gc, const Rect& rect) {
+    XRectangle clip {
+        static_cast<short>(rect.x),
+        static_cast<short>(rect.y),
+        static_cast<unsigned short>(std::max(0, rect.w)),
+        static_cast<unsigned short>(std::max(0, rect.h)),
+    };
+    XSetClipRectangles(display, gc, 0, 0, &clip, 1, Unsorted);
+}
+
+void clearClip(Display* display, GC gc) {
+    XSetClipMask(display, gc, None);
 }
 
 int sliderX(const Slider& slider) {
@@ -113,9 +127,12 @@ public:
             rgb(display_, 100, 108, 112),
             rgb(display_, 37, 40, 41));
         XStoreName(display_, window_, "BJ LED Ambilight");
+        wmDelete_ = XInternAtom(display_, "WM_DELETE_WINDOW", False);
+        XSetWMProtocols(display_, window_, &wmDelete_, 1);
         XSelectInput(display_, window_, ExposureMask | ButtonPressMask | ButtonReleaseMask | Button1MotionMask | StructureNotifyMask);
         XMapWindow(display_, window_);
         gc_ = XCreateGC(display_, window_, 0, nullptr);
+        backbuffer_ = XCreatePixmap(display_, window_, unsigned(width_), unsigned(height_), unsigned(DefaultDepth(display_, screen)));
         titleFont_ = XLoadQueryFont(display_, "-*-helvetica-bold-r-normal-*-34-*-*-*-*-*-*-*");
         labelFont_ = XLoadQueryFont(display_, "-*-helvetica-bold-r-normal-*-18-*-*-*-*-*-*-*");
         textFont_ = XLoadQueryFont(display_, "-*-helvetica-medium-r-normal-*-18-*-*-*-*-*-*-*");
@@ -136,12 +153,14 @@ public:
                 if (event.type == ConfigureNotify) {
                     width_ = std::max(940, event.xconfigure.width);
                     height_ = std::max(650, event.xconfigure.height);
+                    recreateBackbuffer();
                     rebuildLayout();
                     draw();
                 }
                 if (event.type == ButtonPress) pointer(event.xbutton.x, event.xbutton.y, true);
                 if (event.type == MotionNotify) pointer(event.xmotion.x, event.xmotion.y, false);
                 if (event.type == ButtonRelease) activeSlider_ = -1;
+                if (event.type == ClientMessage && static_cast<Atom>(event.xclient.data.l[0]) == wmDelete_) running = false;
             }
 
             const auto now = std::chrono::steady_clock::now();
@@ -152,6 +171,9 @@ public:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(3));
         }
+        if (backbuffer_) XFreePixmap(display_, backbuffer_);
+        if (gc_) XFreeGC(display_, gc_);
+        XCloseDisplay(display_);
         return 0;
     }
 
@@ -190,45 +212,61 @@ private:
         if (logs_.size() > 6) logs_.erase(logs_.begin());
     }
 
-    void drawButton(const Rect& rect, const char* label, bool active = false) {
-        fill(display_, window_, gc_, rect, active ? rgb(display_, 30, 132, 240) : rgb(display_, 72, 75, 77));
-        text(display_, window_, gc_, textFont_, rect.x + 16, rect.y + 22, label, rgb(display_, 245, 245, 245));
+    const char* modeTitle() const {
+        switch (settings_.mode) {
+            case bj::SampleMode::Average: return "Average";
+            case bj::SampleMode::Vibrant: return "Vibrant";
+            case bj::SampleMode::Balanced:
+            default: return "Balanced";
+        }
+    }
+
+    void recreateBackbuffer() {
+        if (backbuffer_) XFreePixmap(display_, backbuffer_);
+        backbuffer_ = XCreatePixmap(display_, window_, unsigned(width_), unsigned(height_), unsigned(DefaultDepth(display_, DefaultScreen(display_))));
+    }
+
+    void drawButton(Drawable target, const Rect& rect, const char* label, bool active = false) {
+        fill(display_, target, gc_, rect, active ? rgb(display_, 30, 132, 240) : rgb(display_, 72, 75, 77));
+        text(display_, target, gc_, textFont_, rect.x + 16, rect.y + 22, label, rgb(display_, 245, 245, 245));
     }
 
     void draw() {
-        fill(display_, window_, gc_, {0, 0, width_, height_}, rgb(display_, 37, 40, 41));
-        fill(display_, window_, gc_, {30, 28, 38, 38}, rgb(display_, 4, 15, 38));
-        text(display_, window_, gc_, textFont_, 36, 55, "BJ", rgb(display_, 255, 255, 255));
-        text(display_, window_, gc_, titleFont_, 80, 60, "BJ LED Ambilight", rgb(display_, 245, 245, 247));
+        if (!backbuffer_) recreateBackbuffer();
+        Drawable target = backbuffer_;
+        fill(display_, target, gc_, {0, 0, width_, height_}, rgb(display_, 37, 40, 41));
+        fill(display_, target, gc_, {30, 28, 38, 38}, rgb(display_, 4, 15, 38));
+        text(display_, target, gc_, textFont_, 36, 55, "BJ", rgb(display_, 255, 255, 255));
+        text(display_, target, gc_, titleFont_, 80, 60, "BJ LED Ambilight", rgb(display_, 245, 245, 247));
 
-        text(display_, window_, gc_, labelFont_, 28, 116, "Device", rgb(display_, 245, 245, 245));
-        text(display_, window_, gc_, labelFont_, 28, 168, "Display", rgb(display_, 245, 245, 245));
-        text(display_, window_, gc_, labelFont_, 428, 168, "Mode", rgb(display_, 245, 245, 245));
+        text(display_, target, gc_, labelFont_, 28, 116, "Device", rgb(display_, 245, 245, 245));
+        text(display_, target, gc_, labelFont_, 28, 168, "Display", rgb(display_, 245, 245, 245));
+        text(display_, target, gc_, labelFont_, 428, 168, "Mode", rgb(display_, 245, 245, 245));
 
-        drawButton(deviceRect_, connected_ ? "BJ_LED  RSSI -54" : "No device yet");
-        drawButton(scanRect_, "Scan");
-        drawButton(connectRect_, "Connect");
-        drawButton(displayRect_, "Display 1");
-        drawButton(modeRect_, "Balanced");
-        drawButton(max127Rect_, "127", settings_.maxChannel == 127);
-        drawButton(max255Rect_, "255", settings_.maxChannel == 255);
+        drawButton(target, deviceRect_, deviceLabel_.c_str());
+        drawButton(target, scanRect_, "Scan");
+        drawButton(target, connectRect_, "Connect");
+        drawButton(target, displayRect_, "Virtual desktop");
+        drawButton(target, modeRect_, modeTitle());
+        drawButton(target, max127Rect_, "127", settings_.maxChannel == 127);
+        drawButton(target, max255Rect_, "255", settings_.maxChannel == 255);
 
         for (const Slider& slider : sliders_) {
-            text(display_, window_, gc_, labelFont_, 28, slider.rect.y + 20, slider.label, rgb(display_, 245, 245, 245));
-            fill(display_, window_, gc_, {slider.rect.x, slider.rect.y + 10, slider.rect.w, 6}, rgb(display_, 82, 86, 88));
+            text(display_, target, gc_, labelFont_, 28, slider.rect.y + 20, slider.label, rgb(display_, 245, 245, 245));
+            fill(display_, target, gc_, {slider.rect.x, slider.rect.y + 10, slider.rect.w, 6}, rgb(display_, 82, 86, 88));
             const int knob = sliderX(slider);
-            fill(display_, window_, gc_, {slider.rect.x, slider.rect.y + 10, std::max(1, knob - slider.rect.x), 6}, rgb(display_, 30, 132, 240));
-            fill(display_, window_, gc_, {knob - 11, slider.rect.y + 2, 22, 22}, rgb(display_, 232, 234, 236));
+            fill(display_, target, gc_, {slider.rect.x, slider.rect.y + 10, std::max(1, knob - slider.rect.x), 6}, rgb(display_, 30, 132, 240));
+            fill(display_, target, gc_, {knob - 11, slider.rect.y + 2, 22, 22}, rgb(display_, 232, 234, 236));
             char value[32];
             std::snprintf(value, sizeof(value), "%.2f", slider.value);
-            text(display_, window_, gc_, textFont_, 650, slider.rect.y + 20, value, rgb(display_, 245, 245, 245));
+            text(display_, target, gc_, textFont_, 650, slider.rect.y + 20, value, rgb(display_, 245, 245, 245));
         }
 
         const char* modes[5] {"Auto", "Red", "Green", "Blue", "White"};
-        for (int i = 0; i < 5; ++i) drawButton(outputRects_[i], modes[i], outputMode_ == i);
+        for (int i = 0; i < 5; ++i) drawButton(target, outputRects_[i], modes[i], outputMode_ == i);
 
-        fill(display_, window_, gc_, previewRect_, rgb(display_, smoothed_));
-        border(display_, window_, gc_, previewRect_, rgb(display_, 34, 87, 120));
+        fill(display_, target, gc_, previewRect_, rgb(display_, smoothed_));
+        border(display_, target, gc_, previewRect_, rgb(display_, 34, 87, 120));
         const int sw = 28;
         const int gap = 8;
         const std::array<Rect, 4> swatches {{
@@ -238,20 +276,23 @@ private:
             {previewRect_.x + previewRect_.w + gap, previewRect_.y, sw, sw},
         }};
         for (int i = 0; i < 4; ++i) {
-            fill(display_, window_, gc_, swatches[i], rgb(display_, frame_.corners[i]));
-            border(display_, window_, gc_, swatches[i], rgb(display_, 58, 72, 92));
+            fill(display_, target, gc_, swatches[i], rgb(display_, frame_.corners[i]));
+            border(display_, target, gc_, swatches[i], rgb(display_, 58, 72, 92));
         }
 
         char rgbText[80];
         std::snprintf(rgbText, sizeof(rgbText), "RGB %u %u %u", smoothed_.r, smoothed_.g, smoothed_.b);
-        text(display_, window_, gc_, labelFont_, 726, 402, rgbText, rgb(display_, 245, 245, 245));
+        text(display_, target, gc_, labelFont_, 726, 402, rgbText, rgb(display_, 245, 245, 245));
 
-        fill(display_, window_, gc_, logRect_, rgb(display_, 22, 27, 29));
+        fill(display_, target, gc_, logRect_, rgb(display_, 22, 27, 29));
+        setClip(display_, gc_, {logRect_.x + 8, logRect_.y + 8, logRect_.w - 16, logRect_.h - 16});
         int y = logRect_.y + 28;
         for (const std::string& line : logs_) {
-            text(display_, window_, gc_, monoFont_, logRect_.x + 16, y, line.c_str(), rgb(display_, 222, 226, 229));
+            text(display_, target, gc_, monoFont_, logRect_.x + 16, y, line.c_str(), rgb(display_, 222, 226, 229));
             y += 18;
         }
+        clearClip(display_, gc_);
+        XCopyArea(display_, backbuffer_, window_, gc_, 0, 0, unsigned(width_), unsigned(height_), 0, 0);
         XFlush(display_);
     }
 
@@ -274,6 +315,9 @@ private:
             }
             if (contains(max127Rect_, x, y)) settings_.maxChannel = 127;
             if (contains(max255Rect_, x, y)) settings_.maxChannel = 255;
+            if (contains(deviceRect_, x, y)) appendLog(address_.empty() ? "No scanned device yet" : "BJ_LED selected");
+            if (contains(displayRect_, x, y)) appendLog("Capturing the X11 virtual desktop");
+            if (contains(modeRect_, x, y)) cycleMode();
             if (contains(scanRect_, x, y)) scanDevices();
             if (contains(connectRect_, x, y)) {
                 appendLog("Connecting to BJ_LED...");
@@ -300,6 +344,22 @@ private:
             settings_.smoothing = slider.value;
         } else if (activeSlider_ == 4) {
             settings_.threshold = slider.value;
+        }
+        hasSmoothed_ = false;
+    }
+
+    void cycleMode() {
+        modeIndex_ = (modeIndex_ + 1) % 3;
+        switch (modeIndex_) {
+            case 1:
+                settings_.mode = bj::SampleMode::Average;
+                break;
+            case 2:
+                settings_.mode = bj::SampleMode::Vibrant;
+                break;
+            default:
+                settings_.mode = bj::SampleMode::Balanced;
+                break;
         }
         hasSmoothed_ = false;
     }
@@ -341,6 +401,7 @@ private:
             const size_t secondSpace = firstSpace == std::string::npos ? std::string::npos : text.find(' ', firstSpace + 1);
             if (firstSpace != std::string::npos && secondSpace != std::string::npos) {
                 address_ = text.substr(firstSpace + 1, secondSpace - firstSpace - 1);
+                deviceLabel_ = "BJ_LED  ready";
                 appendLog("Found " + address_);
                 pclose(pipe);
                 return;
@@ -372,6 +433,7 @@ private:
     bool connected_ = false;
     std::atomic_bool writeInFlight_ {false};
     int outputMode_ = 0;
+    int modeIndex_ = 0;
     int activeSlider_ = -1;
     int width_ = 940;
     int height_ = 650;
@@ -387,8 +449,11 @@ private:
     std::array<Rect, 5> outputRects_ {};
     std::array<Slider, 5> sliders_ {};
     std::vector<std::string> logs_;
+    std::string deviceLabel_ = "No device yet";
     Display* display_ = nullptr;
     Window window_ = 0;
+    Pixmap backbuffer_ = 0;
+    Atom wmDelete_ = 0;
     GC gc_ {};
     XFontStruct* titleFont_ = nullptr;
     XFontStruct* labelFont_ = nullptr;
