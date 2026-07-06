@@ -12,50 +12,77 @@
   <a href="https://github.com/alman790/bj-led-screen-sync/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/alman790/bj-led-screen-sync/ci.yml?branch=main&label=ci&style=for-the-badge"></a>
   <a href="https://github.com/alman790/bj-led-screen-sync/releases"><img alt="Release" src="https://img.shields.io/github/v/release/alman790/bj-led-screen-sync?include_prereleases&label=release&style=for-the-badge"></a>
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white&style=for-the-badge">
+  <img alt="Coverage" src="https://img.shields.io/badge/core%20coverage-99%25-brightgreen?style=for-the-badge">
+  <img alt="Contributors" src="https://img.shields.io/github/contributors/alman790/bj-led-screen-sync?style=for-the-badge">
   <img alt="License" src="https://img.shields.io/github/license/alman790/bj-led-screen-sync?style=for-the-badge">
 </p>
 
 <p align="center">
-  <img alt="macOS" src="https://img.shields.io/badge/macOS-primary-111111?logo=apple&logoColor=white&style=flat-square">
-  <img alt="Linux" src="https://img.shields.io/badge/Linux-experimental-FCC624?logo=linux&logoColor=111111&style=flat-square">
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-experimental-0078D4?logo=windows&logoColor=white&style=flat-square">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-supported-111111?logo=apple&logoColor=white&style=flat-square">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-supported-0078D4?logo=windows&logoColor=white&style=flat-square">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=111111&style=flat-square">
   <img alt="Bluetooth LE" src="https://img.shields.io/badge/Bluetooth-LE-0082FC?logo=bluetooth&logoColor=white&style=flat-square">
 </p>
 
-BJ LED Ambilight is a native desktop app that syncs a `BJ_LED` / `BJ_LED_M`
-Bluetooth LED strip with the colors on your screen.
+BJ LED Ambilight syncs a `BJ_LED` / `BJ_LED_M` Bluetooth LED strip with the
+colors on your screen. It captures a downscaled frame in memory, analyzes the
+screen edges and corners, and sends compact RGB updates to the strip over
+Bluetooth LE.
 
-It is built for a lightweight, always-on ambilight setup: the app captures a
-downscaled frame, analyzes the screen edges and corners, and sends compact RGB
-updates to the LED strip over Bluetooth.
+## Features
 
-## Highlights
-
-- Native macOS app with a translucent control panel.
-- Cross-platform C++ core for color analysis and BJ_LED packet generation.
+- Native app builds for macOS, Windows, and Linux.
+- Cross-platform C++20 color pipeline and BJ_LED packet generation.
 - Zoned screen analysis using edges and corners instead of a single flat average.
-- Auto output mode for screen-reactive lighting.
-- Manual output modes for fixed red, green, blue, and white colors.
-- Low-resolution in-memory sampling designed to keep CPU and memory usage small.
+- Auto mode for live screen-reactive lighting.
+- Manual red, green, blue, and white output modes.
+- FPS, brightness, saturation, smoothing, threshold, and 127/255 channel controls.
+- Low-resolution in-memory sampling designed to keep CPU and memory use small.
 - No screenshot files are written during live capture.
+
+## Install
+
+Download the latest build from
+[GitHub Releases](https://github.com/alman790/bj-led-screen-sync/releases/latest).
+
+macOS and Linux can install from the release script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alman790/bj-led-screen-sync/main/scripts/install.sh | bash
+```
+
+Windows can install from PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/alman790/bj-led-screen-sync/main/scripts/install-windows.ps1 -UseB | iex
+```
 
 ## Platform Support
 
 | Platform | Status | Capture | Bluetooth |
 | --- | --- | --- | --- |
-| macOS | Primary | CoreGraphics composited display capture | CoreBluetooth |
-| Linux | Experimental | X11 / XWayland | BlueZ |
-| Windows | Experimental | Win32 / GDI | Windows Bluetooth GATT |
+| macOS | Supported | CoreGraphics display stream | CoreBluetooth |
+| Windows | Supported | Win32 / GDI virtual desktop capture | Windows Bluetooth GATT plus BLE advertisement scan fallback |
+| Linux | Supported | X11 / XWayland virtual desktop capture | BlueZ |
 
-The shared color pipeline is implemented in C++ and reused across platforms.
-Platform-specific code is isolated under `src/platform` and `src/macos`.
+The app uses the same shared color pipeline on every platform. Platform-specific
+code is isolated under `src/macos`, `src/platform/windows`, and
+`src/platform/linux`.
+
+## Platform Notes
+
+- macOS requires Screen Recording and Bluetooth permissions.
+- Windows Bluetooth can require the strip to be visible to the Windows Bluetooth
+  stack before GATT writes are available. Scan also listens for BJ_LED BLE
+  advertisements.
+- Linux requires X11 or XWayland and BlueZ.
 
 ## Security Note
 
 Windows antivirus tools can warn about new unsigned installers or portable
-builds, especially before a release has reputation history. The project does
-not include malware: the source is public, release artifacts are built by
-GitHub Actions, and checksums are published with each release.
+builds, especially before a release has reputation history. The project does not
+include malware: the source is public, release artifacts are built by GitHub
+Actions, and checksums are published with each release.
 
 ## LED Protocol
 
@@ -66,7 +93,7 @@ Characteristic: 0000ee01-0000-1000-8000-00805f9b34fb
 Packet:         69 96 05 02 RR GG BB WW
 ```
 
-The app already computes separate edge and corner colors internally. Multi-zone
+The app computes separate edge and corner colors internally. Multi-zone strip
 output will require a confirmed segmented or addressable BJ_LED protocol.
 
 ## Project Layout
@@ -77,6 +104,7 @@ src/macos/                           macOS AppKit, capture, and Bluetooth backen
 src/platform/linux/                  Linux capture and BlueZ backend
 src/platform/windows/                Windows UI, capture, and Bluetooth backend
 src/resources/                       app icons and macOS bundle resources
+tests/                               core unit tests
 ```
 
 ## Resource Model
@@ -86,6 +114,20 @@ src/resources/                       app icons and macOS bundle resources
 - Default sample buffer: `160 x 90 x 4`, about 57 KB.
 - Bluetooth writes use fixed 8-byte packets.
 - Live capture uses memory buffers only.
+
+## Development
+
+```bash
+make test
+make coverage
+make lint
+```
+
+Tests run in CI on every push and pull request. The shared core has an enforced
+99% line coverage gate.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules and platform
+validation notes.
 
 ## License
 

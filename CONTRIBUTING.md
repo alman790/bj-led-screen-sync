@@ -14,7 +14,7 @@ frameworks.
 - Keep platform code isolated in the platform folder that owns it.
 - Prefer small, direct C++20 code over broad abstractions.
 - Do not write screen frames or screenshots to disk during live capture.
-- Keep release artifacts, generated builds, caches, and local screenshots out of git.
+- Keep release artifacts, build outputs, caches, and local screenshots out of git.
 
 ## Architecture
 
