@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <cstring>
 
 #if BJ_LED_HAS_X11
 static uint8_t extractChannel(unsigned long pixel, unsigned long mask) {
@@ -18,6 +19,16 @@ static uint8_t extractChannel(unsigned long pixel, unsigned long mask) {
     unsigned long value = (pixel & mask) >> shift;
     unsigned long maxValue = mask >> shift;
     return uint8_t((value * 255ul) / std::max(1ul, maxValue));
+}
+
+static unsigned long readPixel(const XImage* image, int x, int y) {
+    if (image->bits_per_pixel == 32) {
+        const auto* row = reinterpret_cast<const unsigned char*>(image->data + y * image->bytes_per_line);
+        uint32_t value = 0;
+        std::memcpy(&value, row + x * 4, sizeof(value));
+        return value;
+    }
+    return XGetPixel(const_cast<XImage*>(image), x, y);
 }
 #endif
 
@@ -72,7 +83,7 @@ std::span<const bj::RGB> LinuxScreenCapture::capture() {
         const int srcY = std::clamp((y * sourceHeight_) / settings_.sampleHeight, 0, sourceHeight_ - 1);
         for (int x = 0; x < settings_.sampleWidth; ++x) {
             const int srcX = std::clamp((x * sourceWidth_) / settings_.sampleWidth, 0, sourceWidth_ - 1);
-            const unsigned long pixel = XGetPixel(image, srcX, srcY);
+            const unsigned long pixel = readPixel(image, srcX, srcY);
             pixels_[size_t(y * settings_.sampleWidth + x)] = bj::RGB(
                 extractChannel(pixel, image->red_mask),
                 extractChannel(pixel, image->green_mask),

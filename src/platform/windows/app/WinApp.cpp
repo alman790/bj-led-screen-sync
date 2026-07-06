@@ -367,7 +367,8 @@ void WinApp::tick() {
     const auto now = std::chrono::steady_clock::now();
     const bool forceRefresh = now - lastWriteTime_ >= std::chrono::milliseconds(250);
     const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
-    if (led_.isReady() && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
+    const bool writeWindowOpen = now - lastWriteTime_ >= std::chrono::milliseconds(90);
+    if (led_.isReady() && writeWindowOpen && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
         const bj::RGB color = smoothed_;
         const int maxChannel = settings_.maxChannel;
         lastSent_ = color;
