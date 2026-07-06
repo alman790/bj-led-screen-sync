@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${BJ_LED_VERSION:-0.1.0}"
+VERSION="${BJ_LED_VERSION:-0.1.8}"
 REPOSITORY="${BJ_LED_REPOSITORY:-alman790/bj-led-screen-sync}"
 BASE_URL="${BJ_LED_RELEASE_BASE_URL:-https://github.com/${REPOSITORY}/releases/download/v${VERSION}/}"
 TMP_DIR="$(mktemp -d)"
