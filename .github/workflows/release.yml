@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS artifacts
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build macOS artifacts
+        run: |
+          make SIGN_IDENTITY=- release
+          SIGN_IDENTITY=- make installers
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*macos*
+            dist/*source*
+
+  linux:
+    name: Linux artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev bluez dpkg-dev
+      - name: Build Linux package
+        run: make -f Makefile.linux package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*linux*
+
+  windows:
+    name: Windows artifacts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build Windows package
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*windows*
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [macos, linux, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect assets
+        run: |
+          mkdir -p dist
+          find artifacts -type f -maxdepth 3 -print -exec cp {} dist/ \;
+          BJ_LED_REPOSITORY="${GITHUB_REPOSITORY}" make release-manifest
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            releases/manifest.json
+          generate_release_notes: true

@@ -1,0 +1,23 @@
+CXX ?= g++
+CXXFLAGS ?= -std=c++20 -O3 -flto -Isrc -Wall -Wextra -Wpedantic
+X11_LIBS := $(shell pkg-config --exists x11 2>/dev/null && pkg-config --libs x11)
+LDFLAGS ?= -pthread $(X11_LIBS)
+SRC := src/platform/linux/main.cpp \
+	src/platform/linux/app/LinuxApp.cpp \
+	src/platform/linux/capture/LinuxScreenCapture.cpp \
+	src/platform/linux/led/BlueZLed.cpp
+
+.PHONY: all package clean
+
+all: build/linux/bj-led-ambilight-linux
+
+build/linux/bj-led-ambilight-linux: $(SRC) src/lib/bj_core.hpp
+	mkdir -p build/linux
+	$(CXX) $(CXXFLAGS) $(SRC) $(LDFLAGS) -o $@
+
+package:
+	chmod +x scripts/package-linux.sh
+	scripts/package-linux.sh
+
+clean:
+	rm -rf build/linux

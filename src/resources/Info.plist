@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>BJLEDAmbilight</string>
+  <key>CFBundleIdentifier</key>
+  <string>local.bj-led.ambilight</string>
+  <key>CFBundleName</key>
+  <string>BJ LED Ambilight</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>15.2</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>BJ LED Ambilight connects to your Bluetooth LED strip.</string>
+  <key>NSBluetoothPeripheralUsageDescription</key>
+  <string>BJ LED Ambilight connects to your Bluetooth LED strip.</string>
+</dict>
+</plist>

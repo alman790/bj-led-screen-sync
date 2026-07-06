@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  macos:
+    name: macOS build and tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build smoke test
+        run: make test
+      - name: Build macOS app
+        run: make SIGN_IDENTITY=- app
+      - name: Lint
+        run: make lint
+
+  linux:
+    name: Linux build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev bluez
+      - name: Build
+        run: make -f Makefile.linux
+
+  windows:
+    name: Windows build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        shell: cmd
+        run: nmake /f Makefile.windows
