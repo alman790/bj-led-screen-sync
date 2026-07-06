@@ -5,6 +5,8 @@
 #include <cwchar>
 #include <thread>
 
+#include "platform/windows/resource.h"
+
 namespace {
 COLORREF colorRef(unsigned char r, unsigned char g, unsigned char b) {
     return COLORREF(unsigned(r) | (unsigned(g) << 8U) | (unsigned(b) << 16U));
@@ -73,6 +75,7 @@ int WinApp::run(HINSTANCE instance) {
     wc.hInstance = instance_;
     wc.lpszClassName = L"BJLEDAmbilightWindow";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_BJ_APP));
     wc.hbrBackground = CreateSolidBrush(colorRef(31, 34, 36));
     RegisterClassW(&wc);
 
@@ -90,6 +93,11 @@ int WinApp::run(HINSTANCE instance) {
         instance_,
         this);
     ShowWindow(hwnd_, SW_SHOW);
+    HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_BJ_APP));
+    if (icon) {
+        SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+        SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+    }
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
@@ -144,15 +152,30 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
         case WM_TIMER:
             tick();
             break;
+        case WM_ERASEBKGND:
+            return 1;
         case WM_APP + 1:
             connected_ = wparam != 0;
             appendLog(wparam ? L"Strip ready, live writing enabled" : L"BJ_LED service not found");
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
+        case WM_APP + 2:
+            deviceFound_ = wparam != 0;
+            deviceLabel_ = deviceFound_ ? L"BJ_LED  ready" : L"No BJ_LED found";
+            appendLog(deviceFound_ ? L"Found BJ_LED service" : L"BJ_LED not found. Pair it in Windows Bluetooth first.");
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
-            paint(dc);
+            HDC bufferDc = CreateCompatibleDC(dc);
+            HBITMAP bitmap = CreateCompatibleBitmap(dc, width_, height_);
+            HGDIOBJ oldBitmap = SelectObject(bufferDc, bitmap);
+            paint(bufferDc);
+            BitBlt(dc, 0, 0, width_, height_, bufferDc, 0, 0, SRCCOPY);
+            SelectObject(bufferDc, oldBitmap);
+            DeleteObject(bitmap);
+            DeleteDC(bufferDc);
             EndPaint(hwnd, &ps);
             break;
         }
@@ -229,9 +252,9 @@ void WinApp::paint(HDC dc) {
     roundFill(dc, max127Rect_, settings_.maxChannel == 127 ? colorRef(30, 132, 240) : colorRef(72, 75, 77));
     roundFill(dc, max255Rect_, settings_.maxChannel == 255 ? colorRef(30, 132, 240) : colorRef(72, 75, 77));
 
-    drawText(dc, textFont_, L"BJ_LED  RSSI -54", {deviceRect_.x + 16, deviceRect_.y, deviceRect_.w - 32, deviceRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    drawText(dc, textFont_, L"Display 1", {displayRect_.x + 16, displayRect_.y, displayRect_.w - 32, displayRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    drawText(dc, textFont_, L"Balanced", {modeRect_.x + 16, modeRect_.y, modeRect_.w - 32, modeRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, deviceLabel_.c_str(), {deviceRect_.x + 16, deviceRect_.y, deviceRect_.w - 32, deviceRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, displayLabel_.c_str(), {displayRect_.x + 16, displayRect_.y, displayRect_.w - 32, displayRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, modeTitle(), {modeRect_.x + 16, modeRect_.y, modeRect_.w - 32, modeRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     drawText(dc, textFont_, L"Scan", scanRect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     drawText(dc, textFont_, L"Connect", connectRect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     drawText(dc, textFont_, L"127", max127Rect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -300,19 +323,32 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
         }
         if (contains(max127Rect_, x, y)) settings_.maxChannel = 127;
         if (contains(max255Rect_, x, y)) settings_.maxChannel = 255;
-            if (contains(scanRect_, x, y)) {
-                appendLog(L"Scanning paired BLE devices...");
-                appendLog(L"Select Connect to open the BJ_LED GATT service");
+            if (contains(deviceRect_, x, y)) {
+                appendLog(deviceFound_ ? L"BJ_LED selected" : L"No scanned device yet");
             }
-            if (contains(connectRect_, x, y)) {
+            if (contains(displayRect_, x, y)) {
+                appendLog(L"Capturing the Windows virtual desktop");
+            }
+            if (contains(modeRect_, x, y)) {
+                cycleMode();
+            }
+            if (contains(scanRect_, x, y) && !scanInFlight_.exchange(true)) {
+                deviceLabel_ = L"Scanning...";
+                appendLog(L"Scanning paired BLE GATT services...");
+                std::thread([this] {
+                    WinBleLed probe;
+                    const bool ok = probe.connect(nullptr);
+                    scanInFlight_ = false;
+                    PostMessageW(hwnd_, WM_APP + 2, ok ? 1 : 0, 0);
+                }).detach();
+            }
+            if (contains(connectRect_, x, y) && !connectInFlight_.exchange(true)) {
                 appendLog(L"Connecting to BJ_LED...");
-                if (!writeInFlight_.exchange(true)) {
-                    std::thread([this] {
-                        const bool ok = led_.connect(nullptr);
-                        writeInFlight_ = false;
-                        PostMessageW(hwnd_, WM_APP + 1, ok ? 1 : 0, 0);
-                    }).detach();
-                }
+                std::thread([this] {
+                    const bool ok = led_.connect(nullptr);
+                    connectInFlight_ = false;
+                    PostMessageW(hwnd_, WM_APP + 1, ok ? 1 : 0, 0);
+                }).detach();
             }
     } else if (activeSlider_ >= 0) {
         updateSlider(x);
@@ -347,6 +383,22 @@ void WinApp::updateSlider(int x) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void WinApp::cycleMode() {
+    modeIndex_ = (modeIndex_ + 1) % 3;
+    switch (modeIndex_) {
+        case 1:
+            settings_.mode = bj::SampleMode::Average;
+            break;
+        case 2:
+            settings_.mode = bj::SampleMode::Vibrant;
+            break;
+        default:
+            settings_.mode = bj::SampleMode::Balanced;
+            break;
+    }
+    hasSmoothed_ = false;
+}
+
 void WinApp::stop() {
     KillTimer(hwnd_, 1);
     delete capture_;
@@ -368,7 +420,7 @@ void WinApp::tick() {
     const bool forceRefresh = now - lastWriteTime_ >= std::chrono::milliseconds(250);
     const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
     const bool writeWindowOpen = now - lastWriteTime_ >= std::chrono::milliseconds(90);
-    if (led_.isReady() && writeWindowOpen && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
+    if (led_.isReady() && !connectInFlight_ && writeWindowOpen && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
         const bj::RGB color = smoothed_;
         const int maxChannel = settings_.maxChannel;
         lastSent_ = color;
@@ -394,4 +446,13 @@ bj::RGB WinApp::selectedOutputColor(bj::RGB autoColor) const {
 void WinApp::setOutputMode(int mode) {
     outputMode_ = mode;
     hasSmoothed_ = false;
+}
+
+const wchar_t* WinApp::modeTitle() const {
+    switch (settings_.mode) {
+        case bj::SampleMode::Average: return L"Average";
+        case bj::SampleMode::Vibrant: return L"Vibrant";
+        case bj::SampleMode::Balanced:
+        default: return L"Balanced";
+    }
 }

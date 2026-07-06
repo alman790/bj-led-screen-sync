@@ -53,8 +53,10 @@ private:
     void handlePointer(int x, int y, bool pressed);
     void releasePointer();
     void updateSlider(int x);
+    void cycleMode();
     bj::RGB selectedOutputColor(bj::RGB autoColor) const;
     void setOutputMode(int mode);
+    const wchar_t* modeTitle() const;
 
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -76,6 +78,7 @@ private:
     std::array<Rect, 5> outputRects_ {};
     std::array<Slider, 5> sliders_ {};
     int activeSlider_ = -1;
+    int modeIndex_ = 0;
     bj::Settings settings_;
     bj::ColorAnalyzer analyzer_;
     bj::RGB smoothed_;
@@ -85,8 +88,13 @@ private:
     bool hasSmoothed_ = false;
     int outputMode_ = 0;
     bool connected_ = false;
+    bool deviceFound_ = false;
     std::atomic_bool writeInFlight_ {false};
+    std::atomic_bool connectInFlight_ {false};
+    std::atomic_bool scanInFlight_ {false};
     GdiScreenCapture* capture_ = nullptr;
     WinBleLed led_;
+    std::wstring deviceLabel_ = L"No device yet";
+    std::wstring displayLabel_ = L"Virtual desktop";
     std::vector<std::wstring> logs_;
 };
