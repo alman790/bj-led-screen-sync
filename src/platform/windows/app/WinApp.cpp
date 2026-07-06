@@ -1,8 +1,67 @@
 #include "lib/platform/windows/app/WinApp.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <cwchar>
+
 namespace {
-COLORREF makeColorRef(unsigned char r, unsigned char g, unsigned char b) {
+COLORREF colorRef(unsigned char r, unsigned char g, unsigned char b) {
     return COLORREF(unsigned(r) | (unsigned(g) << 8U) | (unsigned(b) << 16U));
+}
+
+COLORREF colorRef(bj::RGB c) {
+    return colorRef(c.r, c.g, c.b);
+}
+
+bool contains(const WinApp::Rect& rect, int x, int y) {
+    return x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
+}
+
+void fillRect(HDC dc, const WinApp::Rect& rect, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    RECT native {rect.x, rect.y, rect.x + rect.w, rect.y + rect.h};
+    FillRect(dc, &native, brush);
+    DeleteObject(brush);
+}
+
+void frameRect(HDC dc, const WinApp::Rect& rect, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    RoundRect(dc, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, 18, 18);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void roundFill(HDC dc, const WinApp::Rect& rect, COLORREF color, int radius = 18) {
+    HBRUSH brush = CreateSolidBrush(color);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    RoundRect(dc, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, radius, radius);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
+}
+
+void drawText(HDC dc, HFONT font, const wchar_t* text, const WinApp::Rect& rect, COLORREF color, UINT format) {
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    RECT native {rect.x, rect.y, rect.x + rect.w, rect.y + rect.h};
+    DrawTextW(dc, text, -1, &native, format);
+    SelectObject(dc, oldFont);
+}
+
+int sliderX(const WinApp::Slider& slider) {
+    const float t = (slider.value - slider.min) / std::max(0.001f, slider.max - slider.min);
+    return slider.rect.x + int(std::clamp(t, 0.0f, 1.0f) * float(slider.rect.w));
+}
+
+std::wstring formatFloat(float value) {
+    wchar_t text[32];
+    std::swprintf(text, 32, L"%.2f", value);
+    return text;
 }
 }
 
@@ -13,7 +72,7 @@ int WinApp::run(HINSTANCE instance) {
     wc.hInstance = instance_;
     wc.lpszClassName = L"BJLEDAmbilightWindow";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(makeColorRef(24, 26, 30));
+    wc.hbrBackground = CreateSolidBrush(colorRef(31, 34, 36));
     RegisterClassW(&wc);
 
     hwnd_ = CreateWindowExW(
@@ -23,8 +82,8 @@ int WinApp::run(HINSTANCE instance) {
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        760,
-        420,
+        1220,
+        860,
         nullptr,
         nullptr,
         instance_,
@@ -53,26 +112,46 @@ LRESULT CALLBACK WinApp::windowProcThunk(HWND hwnd, UINT message, WPARAM wparam,
 
 LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
-        case WM_CREATE:
-            CreateWindowW(L"STATIC", L"BJ LED Ambilight", WS_CHILD | WS_VISIBLE, 24, 22, 240, 28, hwnd, nullptr, instance_, nullptr);
-            outputButtons_[0] = CreateWindowW(L"BUTTON", L"Auto", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP, 24, 78, 84, 26, hwnd, HMENU(10), instance_, nullptr);
-            outputButtons_[1] = CreateWindowW(L"BUTTON", L"Red", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 112, 78, 84, 26, hwnd, HMENU(11), instance_, nullptr);
-            outputButtons_[2] = CreateWindowW(L"BUTTON", L"Green", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 200, 78, 94, 26, hwnd, HMENU(12), instance_, nullptr);
-            outputButtons_[3] = CreateWindowW(L"BUTTON", L"Blue", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 298, 78, 84, 26, hwnd, HMENU(13), instance_, nullptr);
-            outputButtons_[4] = CreateWindowW(L"BUTTON", L"White", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 386, 78, 90, 26, hwnd, HMENU(14), instance_, nullptr);
-            SendMessageW(outputButtons_[0], BM_SETCHECK, BST_CHECKED, 0);
-            swatch_ = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_BLACKRECT, 590, 70, 110, 110, hwnd, nullptr, instance_, nullptr);
-            status_ = CreateWindowW(L"STATIC", L"RGB 0 0 0", WS_CHILD | WS_VISIBLE, 24, 128, 440, 24, hwnd, nullptr, instance_, nullptr);
+        case WM_CREATE: {
+            titleFont_ = CreateFontW(48, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            labelFont_ = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            textFont_ = CreateFontW(21, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            monoFont_ = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+            resize(rect.right - rect.left, rect.bottom - rect.top);
             capture_ = new GdiScreenCapture(settings_);
-            led_.connect(nullptr);
-            SetTimer(hwnd, 1, 1000 / settings_.fps, nullptr);
+            appendLog(L"Connecting to BJ_LED...");
+            connected_ = led_.connect(nullptr);
+            appendLog(connected_ ? L"Strip ready, live writing enabled" : L"Preview only, strip not connected");
+            SetTimer(hwnd, 1, std::max(8, 1000 / settings_.fps), nullptr);
             break;
-        case WM_COMMAND:
-            if (LOWORD(wparam) >= 10 && LOWORD(wparam) <= 14) setOutputMode(int(LOWORD(wparam) - 10));
+        }
+        case WM_SIZE:
+            resize(LOWORD(lparam), HIWORD(lparam));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case WM_LBUTTONDOWN:
+            SetCapture(hwnd);
+            handlePointer(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), true);
+            break;
+        case WM_MOUSEMOVE:
+            if (wparam & MK_LBUTTON) handlePointer(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), false);
+            break;
+        case WM_LBUTTONUP:
+            releasePointer();
+            ReleaseCapture();
             break;
         case WM_TIMER:
             tick();
             break;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            paint(dc);
+            EndPaint(hwnd, &ps);
+            break;
+        }
         case WM_DESTROY:
             stop();
             PostQuitMessage(0);
@@ -83,11 +162,188 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
     return 0;
 }
 
+void WinApp::resize(int width, int height) {
+    width_ = std::max(width, 980);
+    height_ = std::max(height, 680);
+    rebuildLayout();
+}
+
+void WinApp::rebuildLayout() {
+    const int left = 36;
+    const int labelW = 150;
+    const int fieldX = left + labelW + 10;
+    const int rightX = width_ - 320;
+    deviceRect_ = {fieldX, 118, 450, 32};
+    scanRect_ = {fieldX + 480, 118, 140, 32};
+    connectRect_ = {fieldX + 636, 118, 160, 32};
+    displayRect_ = {fieldX, 188, 330, 32};
+    modeRect_ = {fieldX + 460, 188, 230, 32};
+    max127Rect_ = {fieldX + 720, 188, 84, 32};
+    max255Rect_ = {fieldX + 804, 188, 84, 32};
+    previewRect_ = {rightX + 70, 320, 170, 170};
+    logRect_ = {36, height_ - 145, width_ - 72, 112};
+
+    const wchar_t* labels[5] {L"FPS", L"Brightness", L"Saturation", L"Smoothing", L"Threshold"};
+    const float mins[5] {5.0f, 0.20f, 0.50f, 0.0f, 0.0f};
+    const float maxs[5] {30.0f, 1.0f, 2.4f, 1.0f, 30.0f};
+    const float values[5] {float(settings_.fps), settings_.brightness, settings_.saturation, settings_.smoothing, settings_.threshold};
+    for (int i = 0; i < 5; ++i) {
+        sliders_[i] = {{fieldX, 300 + i * 70, width_ - fieldX - 430, 28}, labels[i], mins[i], maxs[i], values[i]};
+    }
+
+    const int segY = std::min(height_ - 205, 650);
+    int segX = left;
+    const int widths[5] {108, 104, 118, 104, 118};
+    for (int i = 0; i < 5; ++i) {
+        outputRects_[i] = {segX, segY, widths[i], 32};
+        segX += widths[i] + 4;
+    }
+}
+
+void WinApp::appendLog(const wchar_t* line) {
+    logs_.push_back(line);
+    if (logs_.size() > 6) logs_.erase(logs_.begin());
+}
+
+void WinApp::paint(HDC dc) {
+    RECT client {0, 0, width_, height_};
+    HBRUSH bg = CreateSolidBrush(colorRef(37, 40, 41));
+    FillRect(dc, &client, bg);
+    DeleteObject(bg);
+
+    roundFill(dc, {36, 26, 54, 54}, colorRef(4, 15, 38), 18);
+    drawText(dc, textFont_, L"BJ", {50, 40, 32, 28}, colorRef(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, titleFont_, L"BJ LED Ambilight", {110, 30, 560, 70}, colorRef(245, 245, 247), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    drawText(dc, labelFont_, L"Device", {36, 116, 140, 34}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, labelFont_, L"Display", {36, 186, 140, 34}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, labelFont_, L"Mode", {deviceRect_.x + 560, 188, 100, 34}, colorRef(244, 244, 244), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    roundFill(dc, deviceRect_, colorRef(73, 76, 77));
+    roundFill(dc, displayRect_, colorRef(73, 76, 77));
+    roundFill(dc, modeRect_, colorRef(73, 76, 77));
+    roundFill(dc, scanRect_, colorRef(72, 75, 77));
+    roundFill(dc, connectRect_, colorRef(72, 75, 77));
+    roundFill(dc, max127Rect_, settings_.maxChannel == 127 ? colorRef(30, 132, 240) : colorRef(72, 75, 77));
+    roundFill(dc, max255Rect_, settings_.maxChannel == 255 ? colorRef(30, 132, 240) : colorRef(72, 75, 77));
+
+    drawText(dc, textFont_, L"BJ_LED  RSSI -54", {deviceRect_.x + 16, deviceRect_.y, deviceRect_.w - 32, deviceRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, L"Display 1", {displayRect_.x + 16, displayRect_.y, displayRect_.w - 32, displayRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, L"Balanced", {modeRect_.x + 16, modeRect_.y, modeRect_.w - 32, modeRect_.h}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, L"Scan", scanRect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, L"Connect", connectRect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, L"127", max127Rect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawText(dc, textFont_, L"255", max255Rect_, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    for (const Slider& slider : sliders_) {
+        const int rowY = slider.rect.y - 6;
+        drawText(dc, labelFont_, slider.label, {36, rowY - 2, 140, 32}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        roundFill(dc, {slider.rect.x, slider.rect.y + 11, slider.rect.w, 7}, colorRef(82, 86, 88), 7);
+        const int knob = sliderX(slider);
+        roundFill(dc, {slider.rect.x, slider.rect.y + 11, std::max(1, knob - slider.rect.x), 7}, colorRef(30, 132, 240), 7);
+        roundFill(dc, {knob - 13, slider.rect.y, 26, 26}, colorRef(232, 234, 236), 26);
+        std::wstring value = formatFloat(slider.value);
+        drawText(dc, textFont_, value.c_str(), {slider.rect.x + slider.rect.w + 56, rowY - 2, 90, 32}, colorRef(245, 245, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    const wchar_t* modes[5] {L"Auto", L"Red", L"Green", L"Blue", L"White"};
+    for (int i = 0; i < 5; ++i) {
+        roundFill(dc, outputRects_[i], outputMode_ == i ? colorRef(30, 132, 240) : colorRef(72, 75, 77), 12);
+        drawText(dc, textFont_, modes[i], outputRects_[i], colorRef(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    roundFill(dc, previewRect_, colorRef(smoothed_), 30);
+    frameRect(dc, previewRect_, colorRef(34, 87, 120));
+    const int sw = 36;
+    const std::array<bj::RGB, 4> corners = frameAnalysis_.corners;
+    const std::array<Rect, 4> swatches {{
+        {previewRect_.x - 48, previewRect_.y, sw, sw},
+        {previewRect_.x + previewRect_.w + 12, previewRect_.y, sw, sw},
+        {previewRect_.x - 48, previewRect_.y + previewRect_.h - sw, sw, sw},
+        {previewRect_.x + previewRect_.w + 12, previewRect_.y + previewRect_.h - sw, sw, sw},
+    }};
+    for (int i = 0; i < 4; ++i) {
+        roundFill(dc, swatches[i], colorRef(corners[i]), 10);
+        frameRect(dc, swatches[i], colorRef(58, 72, 92));
+    }
+
+    wchar_t rgb[80];
+    std::swprintf(rgb, 80, L"RGB %u %u %u", smoothed_.r, smoothed_.g, smoothed_.b);
+    drawText(dc, labelFont_, rgb, {previewRect_.x - 10, previewRect_.y + previewRect_.h + 24, previewRect_.w + 20, 36}, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    roundFill(dc, logRect_, colorRef(22, 27, 29), 14);
+    int y = logRect_.y + 12;
+    for (const std::wstring& line : logs_) {
+        drawText(dc, monoFont_, line.c_str(), {logRect_.x + 16, y, logRect_.w - 32, 22}, colorRef(222, 226, 229), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        y += 22;
+    }
+}
+
+void WinApp::handlePointer(int x, int y, bool pressed) {
+    if (pressed) {
+        for (int i = 0; i < int(sliders_.size()); ++i) {
+            if (contains(sliders_[i].rect, x, y) || (x >= sliders_[i].rect.x && x <= sliders_[i].rect.x + sliders_[i].rect.w && y >= sliders_[i].rect.y - 12 && y <= sliders_[i].rect.y + 36)) {
+                activeSlider_ = i;
+                updateSlider(x);
+                return;
+            }
+        }
+        for (int i = 0; i < int(outputRects_.size()); ++i) {
+            if (contains(outputRects_[i], x, y)) {
+                setOutputMode(i);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+        }
+        if (contains(max127Rect_, x, y)) settings_.maxChannel = 127;
+        if (contains(max255Rect_, x, y)) settings_.maxChannel = 255;
+        if (contains(scanRect_, x, y)) appendLog(L"Found BJ_LED  RSSI -54");
+        if (contains(connectRect_, x, y)) {
+            appendLog(L"Connecting to BJ_LED...");
+            connected_ = led_.connect(nullptr);
+            appendLog(connected_ ? L"Strip ready, live writing enabled" : L"Preview only, strip not connected");
+        }
+    } else if (activeSlider_ >= 0) {
+        updateSlider(x);
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void WinApp::releasePointer() {
+    activeSlider_ = -1;
+}
+
+void WinApp::updateSlider(int x) {
+    if (activeSlider_ < 0) return;
+    Slider& slider = sliders_[activeSlider_];
+    const float t = std::clamp(float(x - slider.rect.x) / std::max(1, slider.rect.w), 0.0f, 1.0f);
+    slider.value = slider.min + (slider.max - slider.min) * t;
+    if (activeSlider_ == 0) {
+        settings_.fps = std::clamp(int(slider.value + 0.5f), 5, 30);
+        slider.value = float(settings_.fps);
+        KillTimer(hwnd_, 1);
+        SetTimer(hwnd_, 1, std::max(8, 1000 / settings_.fps), nullptr);
+    } else if (activeSlider_ == 1) {
+        settings_.brightness = slider.value;
+    } else if (activeSlider_ == 2) {
+        settings_.saturation = slider.value;
+    } else if (activeSlider_ == 3) {
+        settings_.smoothing = slider.value;
+    } else if (activeSlider_ == 4) {
+        settings_.threshold = slider.value;
+    }
+    hasSmoothed_ = false;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void WinApp::stop() {
     KillTimer(hwnd_, 1);
     delete capture_;
     capture_ = nullptr;
-    if (status_) SetWindowTextW(status_, L"Stopped");
+    if (titleFont_) DeleteObject(titleFont_);
+    if (labelFont_) DeleteObject(labelFont_);
+    if (textFont_) DeleteObject(textFont_);
+    if (monoFont_) DeleteObject(monoFont_);
 }
 
 void WinApp::tick() {
@@ -97,17 +353,12 @@ void WinApp::tick() {
     bj::RGB color = selectedOutputColor(frameAnalysis_.output);
     smoothed_ = outputMode_ == 0 && hasSmoothed_ ? bj::smooth(smoothed_, color, settings_.smoothing) : color;
     hasSmoothed_ = true;
-    wchar_t text[96];
-    wsprintfW(text, L"RGB %u %u %u", smoothed_.r, smoothed_.g, smoothed_.b);
-    SetWindowTextW(status_, text);
-    HBRUSH brush = CreateSolidBrush(makeColorRef(smoothed_.r, smoothed_.g, smoothed_.b));
-    HDC dc = GetDC(swatch_);
-    RECT rect;
-    GetClientRect(swatch_, &rect);
-    FillRect(dc, &rect, brush);
-    ReleaseDC(swatch_, dc);
-    DeleteObject(brush);
-    if (led_.isReady()) led_.write(smoothed_, settings_.maxChannel);
+    if (led_.isReady() && (bj::distance(lastSent_, smoothed_) >= settings_.threshold || !connected_)) {
+        led_.write(smoothed_, settings_.maxChannel);
+        lastSent_ = smoothed_;
+        connected_ = true;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 bj::RGB WinApp::selectedOutputColor(bj::RGB autoColor) const {
