@@ -48,6 +48,9 @@ private:
     void tick();
     void paint(HDC dc);
     void resize(int width, int height);
+    void applyWindowEffects();
+    void recreateBackbuffer(HDC dc);
+    void destroyBackbuffer();
     void rebuildLayout();
     void appendLog(const wchar_t* line);
     void handlePointer(int x, int y, bool pressed);
@@ -64,6 +67,11 @@ private:
     HFONT labelFont_ = nullptr;
     HFONT textFont_ = nullptr;
     HFONT monoFont_ = nullptr;
+    HDC backbufferDc_ = nullptr;
+    HBITMAP backbufferBitmap_ = nullptr;
+    HGDIOBJ oldBackbufferBitmap_ = nullptr;
+    int backbufferWidth_ = 0;
+    int backbufferHeight_ = 0;
     int width_ = 1200;
     int height_ = 820;
     Rect deviceRect_;
@@ -89,6 +97,7 @@ private:
     int outputMode_ = 0;
     bool connected_ = false;
     bool deviceFound_ = false;
+    bool movingWindow_ = false;
     std::atomic_bool writeInFlight_ {false};
     std::atomic_bool connectInFlight_ {false};
     std::atomic_bool scanInFlight_ {false};

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cwchar>
+#include <memory>
 #include <thread>
 
 #include "platform/windows/resource.h"
@@ -66,6 +67,16 @@ std::wstring formatFloat(float value) {
     std::swprintf(text, 32, L"%.2f", value);
     return text;
 }
+
+template <typename T>
+void setDwmAttribute(HWND hwnd, DWORD attribute, const T& value) {
+    HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+    if (!dwm) return;
+    using DwmSetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    auto* fn = reinterpret_cast<DwmSetWindowAttributeFn>(GetProcAddress(dwm, "DwmSetWindowAttribute"));
+    if (fn) fn(hwnd, attribute, &value, sizeof(T));
+    FreeLibrary(dwm);
+}
 }
 
 int WinApp::run(HINSTANCE instance) {
@@ -92,6 +103,7 @@ int WinApp::run(HINSTANCE instance) {
         nullptr,
         instance_,
         this);
+    applyWindowEffects();
     ShowWindow(hwnd_, SW_SHOW);
     HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_BJ_APP));
     if (icon) {
@@ -134,8 +146,16 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             SetTimer(hwnd, 1, std::max(8, 1000 / settings_.fps), nullptr);
             break;
         }
+        case WM_ENTERSIZEMOVE:
+            movingWindow_ = true;
+            break;
+        case WM_EXITSIZEMOVE:
+            movingWindow_ = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
         case WM_SIZE:
             resize(LOWORD(lparam), HIWORD(lparam));
+            destroyBackbuffer();
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
         case WM_LBUTTONDOWN:
@@ -168,14 +188,9 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
-            HDC bufferDc = CreateCompatibleDC(dc);
-            HBITMAP bitmap = CreateCompatibleBitmap(dc, width_, height_);
-            HGDIOBJ oldBitmap = SelectObject(bufferDc, bitmap);
-            paint(bufferDc);
-            BitBlt(dc, 0, 0, width_, height_, bufferDc, 0, 0, SRCCOPY);
-            SelectObject(bufferDc, oldBitmap);
-            DeleteObject(bitmap);
-            DeleteDC(bufferDc);
+            recreateBackbuffer(dc);
+            paint(backbufferDc_);
+            BitBlt(dc, 0, 0, width_, height_, backbufferDc_, 0, 0, SRCCOPY);
             EndPaint(hwnd, &ps);
             break;
         }
@@ -193,6 +208,51 @@ void WinApp::resize(int width, int height) {
     width_ = std::max(width, 940);
     height_ = std::max(height, 650);
     rebuildLayout();
+}
+
+void WinApp::applyWindowEffects() {
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+    const BOOL dark = TRUE;
+    setDwmAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, dark);
+    const DWORD rounded = 2;
+    setDwmAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, rounded);
+    const DWORD mica = 2;
+    setDwmAttribute(hwnd_, DWMWA_SYSTEMBACKDROP_TYPE, mica);
+}
+
+void WinApp::recreateBackbuffer(HDC dc) {
+    if (backbufferDc_ && backbufferBitmap_ && backbufferWidth_ == width_ && backbufferHeight_ == height_) return;
+    destroyBackbuffer();
+    backbufferDc_ = CreateCompatibleDC(dc);
+    backbufferBitmap_ = CreateCompatibleBitmap(dc, width_, height_);
+    oldBackbufferBitmap_ = SelectObject(backbufferDc_, backbufferBitmap_);
+    backbufferWidth_ = width_;
+    backbufferHeight_ = height_;
+}
+
+void WinApp::destroyBackbuffer() {
+    if (backbufferDc_ && oldBackbufferBitmap_) {
+        SelectObject(backbufferDc_, oldBackbufferBitmap_);
+        oldBackbufferBitmap_ = nullptr;
+    }
+    if (backbufferBitmap_) {
+        DeleteObject(backbufferBitmap_);
+        backbufferBitmap_ = nullptr;
+    }
+    if (backbufferDc_) {
+        DeleteDC(backbufferDc_);
+        backbufferDc_ = nullptr;
+    }
+    backbufferWidth_ = 0;
+    backbufferHeight_ = 0;
 }
 
 void WinApp::rebuildLayout() {
@@ -298,11 +358,15 @@ void WinApp::paint(HDC dc) {
     drawText(dc, labelFont_, rgb, {694, 385, 210, 26}, colorRef(245, 245, 245), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     roundFill(dc, logRect_, colorRef(22, 27, 29), 14);
+    HRGN clip = CreateRectRgn(logRect_.x + 8, logRect_.y + 8, logRect_.x + logRect_.w - 8, logRect_.y + logRect_.h - 8);
+    SelectClipRgn(dc, clip);
     int y = logRect_.y + 12;
     for (const std::wstring& line : logs_) {
-        drawText(dc, monoFont_, line.c_str(), {logRect_.x + 16, y, logRect_.w - 32, 22}, colorRef(222, 226, 229), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        drawText(dc, monoFont_, line.c_str(), {logRect_.x + 16, y, logRect_.w - 32, 22}, colorRef(222, 226, 229), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         y += 22;
     }
+    SelectClipRgn(dc, nullptr);
+    DeleteObject(clip);
 }
 
 void WinApp::handlePointer(int x, int y, bool pressed) {
@@ -335,6 +399,7 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
             if (contains(scanRect_, x, y) && !scanInFlight_.exchange(true)) {
                 deviceLabel_ = L"Scanning...";
                 appendLog(L"Scanning paired BLE GATT services...");
+                appendLog(L"Windows requires BJ_LED to be paired in Bluetooth Settings first.");
                 std::thread([this] {
                     WinBleLed probe;
                     const bool ok = probe.connect(nullptr);
@@ -401,6 +466,7 @@ void WinApp::cycleMode() {
 
 void WinApp::stop() {
     KillTimer(hwnd_, 1);
+    destroyBackbuffer();
     delete capture_;
     capture_ = nullptr;
     if (titleFont_) DeleteObject(titleFont_);
@@ -410,11 +476,13 @@ void WinApp::stop() {
 }
 
 void WinApp::tick() {
-    if (!capture_) return;
+    if (!capture_ || movingWindow_) return;
     auto pixels = capture_->capture();
     frameAnalysis_ = analyzer_.analyzeFrame(pixels, settings_.sampleWidth, settings_.sampleHeight, settings_);
     bj::RGB color = selectedOutputColor(frameAnalysis_.output);
-    smoothed_ = outputMode_ == 0 && hasSmoothed_ ? bj::smooth(smoothed_, color, settings_.smoothing) : color;
+    const bj::RGB next = outputMode_ == 0 && hasSmoothed_ ? bj::smooth(smoothed_, color, settings_.smoothing) : color;
+    const bool visualChanged = !hasSmoothed_ || bj::distance(smoothed_, next) >= 1.0f;
+    smoothed_ = next;
     hasSmoothed_ = true;
     const auto now = std::chrono::steady_clock::now();
     const bool forceRefresh = now - lastWriteTime_ >= std::chrono::milliseconds(250);
@@ -430,7 +498,7 @@ void WinApp::tick() {
             writeInFlight_ = false;
         }).detach();
     }
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    if (visualChanged) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 bj::RGB WinApp::selectedOutputColor(bj::RGB autoColor) const {
