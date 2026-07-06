@@ -119,5 +119,5 @@ void WinBleLed::write(bj::RGB color, int maxChannel) {
     auto* value = reinterpret_cast<BTH_LE_GATT_CHARACTERISTIC_VALUE*>(buffer.data());
     value->DataSize = ULONG(packet.size());
     std::copy(packet.begin(), packet.end(), value->Data);
-    BluetoothGATTSetCharacteristicValue(device_, &characteristic_->value, value, nullptr, BLUETOOTH_GATT_FLAG_NONE);
+    BluetoothGATTSetCharacteristicValue(device_, &characteristic_->value, value, 0, BLUETOOTH_GATT_FLAG_NONE);
 }
