@@ -1,7 +1,10 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++20 -O3 -flto -Isrc -Wall -Wextra -Wpedantic
 X11_LIBS := $(shell pkg-config --exists x11 2>/dev/null && pkg-config --libs x11)
-LDFLAGS ?= -pthread $(X11_LIBS)
+DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1)
+DBUS_LIBS := $(shell pkg-config --libs dbus-1)
+CXXFLAGS += $(DBUS_CFLAGS)
+LDFLAGS ?= -pthread $(X11_LIBS) $(DBUS_LIBS)
 SRC := src/platform/linux/main.cpp \
 	src/platform/linux/app/LinuxApp.cpp \
 	src/platform/linux/capture/LinuxScreenCapture.cpp \
@@ -11,7 +14,7 @@ SRC := src/platform/linux/main.cpp \
 
 all: build/linux/bj-led-ambilight-linux
 
-build/linux/bj-led-ambilight-linux: $(SRC) src/lib/bj_core.hpp
+build/linux/bj-led-ambilight-linux: $(SRC) src/lib/bj_core.hpp src/lib/bj_ble.hpp
 	mkdir -p build/linux
 	$(CXX) $(CXXFLAGS) $(SRC) $(LDFLAGS) -o $@
 

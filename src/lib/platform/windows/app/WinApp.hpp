@@ -98,6 +98,7 @@ private:
     bool connected_ = false;
     bool deviceFound_ = false;
     bool movingWindow_ = false;
+    uint64_t selectedAddress_ = 0;
     std::atomic_bool writeInFlight_ {false};
     std::atomic_bool connectInFlight_ {false};
     std::atomic_bool scanInFlight_ {false};

@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev bluez
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev bluez libdbus-1-dev
       - name: Build
         run: make -f Makefile.linux
 

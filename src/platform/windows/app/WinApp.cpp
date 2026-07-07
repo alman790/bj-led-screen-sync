@@ -2,10 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
 #include <cwchar>
 #include <memory>
-#include <string>
 #include <thread>
 
 #include "platform/windows/resource.h"
@@ -68,38 +66,6 @@ std::wstring formatFloat(float value) {
     wchar_t text[32];
     std::swprintf(text, 32, L"%.2f", value);
     return text;
-}
-
-std::wstring trimAsciiOutput(std::string text) {
-    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ' || text.back() == '\t')) {
-        text.pop_back();
-    }
-    const size_t first = text.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return L"";
-    if (first > 0) text.erase(0, first);
-    return std::wstring(text.begin(), text.end());
-}
-
-std::wstring scanBleAdvertisements() {
-    const char* command =
-        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
-        "\"$ErrorActionPreference='SilentlyContinue';"
-        "$watcher=[Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementWatcher]::new();"
-        "$script:hit='';"
-        "$handler=[Windows.Foundation.TypedEventHandler[Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementWatcher,Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementReceivedEventArgs]]{"
-        "param($s,$e);$n=$e.Advertisement.LocalName;"
-        "if($n -like '*BJ_LED*'){$script:hit=('BJ_LED advertisement '+$e.BluetoothAddress);$s.Stop()}"
-        "};"
-        "$null=$watcher.add_Received($handler);"
-        "$watcher.Start();Start-Sleep -Seconds 6;$watcher.Stop();"
-        "if($script:hit){$script:hit}\"";
-    FILE* pipe = _popen(command, "r");
-    if (!pipe) return L"";
-    std::string output;
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe)) output += buffer;
-    _pclose(pipe);
-    return trimAsciiOutput(output);
 }
 
 template <typename T>
@@ -214,13 +180,19 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
         case WM_APP + 2: {
-            std::unique_ptr<std::wstring> detail(reinterpret_cast<std::wstring*>(lparam));
-            deviceFound_ = wparam != 0;
-            deviceLabel_ = deviceFound_ ? L"BJ_LED  ready" : L"No BJ_LED found";
-            if (deviceFound_ && detail && !detail->empty()) {
-                appendLog(detail->c_str());
+            std::unique_ptr<WinBleDeviceInfo> device(reinterpret_cast<WinBleDeviceInfo*>(lparam));
+            deviceFound_ = device && device->address != 0;
+            selectedAddress_ = deviceFound_ ? device->address : 0;
+            if (deviceFound_) {
+                wchar_t label[96];
+                std::swprintf(label, 96, L"%ls  RSSI %d", device->name.c_str(), device->rssi);
+                deviceLabel_ = label;
+                wchar_t log[160];
+                std::swprintf(log, 160, L"Found %ls address %012llX RSSI %d", device->name.c_str(), static_cast<unsigned long long>(device->address), device->rssi);
+                appendLog(log);
             } else {
-                appendLog(deviceFound_ ? L"Found BJ_LED service" : L"BJ_LED not found. Pair it in Windows Bluetooth first.");
+                deviceLabel_ = L"No BJ_LED found";
+                appendLog(L"BJ_LED not found in BLE advertisements");
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
@@ -441,26 +413,27 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
             }
             if (contains(scanRect_, x, y) && !scanInFlight_.exchange(true)) {
                 deviceLabel_ = L"Scanning...";
-                appendLog(L"Scanning paired BLE GATT services...");
-                appendLog(L"Listening for BJ_LED BLE advertisements...");
+                selectedAddress_ = 0;
+                appendLog(L"BLE scan started");
                 std::thread([this] {
-                    WinBleLed probe;
-                    bool ok = probe.connect(nullptr);
-                    auto detail = std::make_unique<std::wstring>();
-                    if (ok) {
-                        *detail = L"Found BJ_LED GATT service";
-                    } else {
-                        *detail = scanBleAdvertisements();
-                        ok = !detail->empty();
+                    auto devices = WinBleLed::scan();
+                    auto selected = std::make_unique<WinBleDeviceInfo>();
+                    if (!devices.empty()) {
+                        *selected = devices.front();
                     }
                     scanInFlight_ = false;
-                    PostMessageW(hwnd_, WM_APP + 2, ok ? 1 : 0, reinterpret_cast<LPARAM>(detail.release()));
+                    PostMessageW(hwnd_, WM_APP + 2, selected->address ? 1 : 0, reinterpret_cast<LPARAM>(selected.release()));
                 }).detach();
             }
             if (contains(connectRect_, x, y) && !connectInFlight_.exchange(true)) {
-                appendLog(L"Connecting to BJ_LED...");
+                if (selectedAddress_) {
+                    appendLog(L"Connecting by BLE address...");
+                } else {
+                    appendLog(L"Connecting through known Windows GATT devices...");
+                }
                 std::thread([this] {
-                    const bool ok = led_.connect(nullptr);
+                    const uint64_t address = selectedAddress_;
+                    const bool ok = address ? led_.connect(address) : led_.connect(nullptr);
                     connectInFlight_ = false;
                     PostMessageW(hwnd_, WM_APP + 1, ok ? 1 : 0, 0);
                 }).detach();

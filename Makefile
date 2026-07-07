@@ -56,7 +56,7 @@ $(CORE_SMOKE): src/core_smoke.cpp src/lib/bj_core.hpp
 	mkdir -p build
 	$(CXX) $(CORE_CXXFLAGS) src/core_smoke.cpp -o "$(CORE_SMOKE)"
 
-$(CORE_TESTS): tests/core_tests.cpp src/lib/bj_core.hpp
+$(CORE_TESTS): tests/core_tests.cpp src/lib/bj_core.hpp src/lib/bj_ble.hpp
 	mkdir -p build
 	$(CXX) $(CORE_CXXFLAGS) tests/core_tests.cpp -o "$(CORE_TESTS)"
 

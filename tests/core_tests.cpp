@@ -1,4 +1,5 @@
 #include "lib/bj_core.hpp"
+#include "lib/bj_ble.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -106,6 +107,26 @@ void testPackets() {
     assert(highClamp[4] == 255 && highClamp[7] == 255);
 }
 
+void testBleHelpers() {
+    assert(bj::ble::isBjLedName("BJ_LED"));
+    assert(bj::ble::isBjLedName("BJ_LED_M"));
+    assert(bj::ble::isBjLedName("room-BJ_LED-strip"));
+    assert(!bj::ble::isBjLedName("LED_BJ"));
+
+    assert(bj::ble::isEe01Uuid("ee01"));
+    assert(bj::ble::isEe01Uuid("0xEE01"));
+    assert(bj::ble::isEe01Uuid("0000ee01"));
+    assert(bj::ble::isEe01Uuid("0000EE01-0000-1000-8000-00805F9B34FB"));
+    assert(!bj::ble::isEe01Uuid("0000ff01-0000-1000-8000-00805f9b34fb"));
+
+    auto parsed = bj::ble::parseBluetoothAddress("A1:B2:C3:D4:E5:F6");
+    assert(parsed.has_value());
+    assert(*parsed == 0xA1B2C3D4E5F6ULL);
+    assert(bj::ble::formatBluetoothAddress(*parsed) == "A1:B2:C3:D4:E5:F6");
+    assert(bj::ble::parseBluetoothAddress("a1b2c3d4e5f6").has_value());
+    assert(!bj::ble::parseBluetoothAddress("bad").has_value());
+}
+
 void testAnalyzerModes() {
     bj::ColorAnalyzer analyzer;
     bj::Settings settings;
@@ -188,6 +209,7 @@ int main() {
     testHsvConversion();
     testMathHelpers();
     testPackets();
+    testBleHelpers();
     testAnalyzerModes();
     testFrameAnalysisValidation();
     testFrameAnalysisZones();

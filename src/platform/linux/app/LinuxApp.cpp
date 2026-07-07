@@ -389,40 +389,30 @@ private:
     }
 
     void scanDevices() {
-        appendLog("Scanning paired Bluetooth devices...");
-        FILE* pipe = popen("bluetoothctl devices 2>/dev/null", "r");
-        if (!pipe) {
-            appendLog("bluetoothctl unavailable");
+        appendLog("BLE scan started");
+        auto devices = BlueZLed::scan();
+        if (devices.empty()) {
+            appendLog("BJ_LED not found over BlueZ LE scan");
             return;
         }
-        char line[256];
-        while (fgets(line, sizeof(line), pipe)) {
-            std::string text(line);
-            if (text.find("BJ_LED") == std::string::npos && text.find("BJ_LED_M") == std::string::npos) continue;
-            const size_t firstSpace = text.find(' ');
-            const size_t secondSpace = firstSpace == std::string::npos ? std::string::npos : text.find(' ', firstSpace + 1);
-            if (firstSpace != std::string::npos && secondSpace != std::string::npos) {
-                address_ = text.substr(firstSpace + 1, secondSpace - firstSpace - 1);
-                deviceLabel_ = "BJ_LED  ready";
-                appendLog("Found " + address_);
-                pclose(pipe);
-                return;
-            }
-        }
-        pclose(pipe);
-        appendLog("BJ_LED not found. Pair it in system Bluetooth first.");
+        selectedDevice_ = devices.front();
+        address_ = selectedDevice_.address;
+        deviceLabel_ = selectedDevice_.name + "  RSSI " + std::to_string(selectedDevice_.rssi);
+        appendLog("Found " + selectedDevice_.name + " " + selectedDevice_.address);
     }
 
     void connectDevice() {
         if (address_.empty()) {
-            appendLog("No device address. Click Scan after pairing BJ_LED.");
+            appendLog("No device address. Click Scan first.");
             return;
         }
-        connected_ = led_.connect(address_);
+        appendLog("Connecting by BlueZ device path...");
+        connected_ = selectedDevice_.objectPath.empty() ? led_.connect(address_) : led_.connect(selectedDevice_);
         appendLog(connected_ ? "Strip ready, live writing enabled" : "Could not connect to BJ_LED");
     }
 
     std::string address_;
+    BlueZDeviceInfo selectedDevice_;
     bj::Settings settings_;
     LinuxScreenCapture capture_;
     BlueZLed led_;

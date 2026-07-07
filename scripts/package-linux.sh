@@ -22,7 +22,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: amd64
-Depends: libc6, libstdc++6, libx11-6, bluez
+Depends: libc6, libstdc++6, libx11-6, libdbus-1-3, bluez
 Maintainer: BJ LED Ambilight
 Description: Native BJ_LED ambilight controller
  Screen-color ambilight controller for BJ_LED/BJ_LED_M Bluetooth LED strips.

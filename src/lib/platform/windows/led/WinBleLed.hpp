@@ -13,15 +13,28 @@
 
 #include "lib/bj_core.hpp"
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
+struct WinBleDeviceInfo {
+    uint64_t address = 0;
+    std::wstring name;
+    int rssi = -127;
+};
+
 class WinBleLed {
 public:
     ~WinBleLed();
     bool connect(const wchar_t* address);
+    bool connect(uint64_t address);
     bool isReady() const;
     void write(bj::RGB color, int maxChannel);
+    static std::vector<WinBleDeviceInfo> scan(int timeoutMs = 6000, int limit = 12);
 
 private:
     void close();
+    bool connectKnownGattDevice();
 
     bool ready_ = false;
     HANDLE device_ = INVALID_HANDLE_VALUE;

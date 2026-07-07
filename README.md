@@ -62,7 +62,7 @@ iwr https://raw.githubusercontent.com/alman790/bj-led-screen-sync/main/scripts/i
 | Platform | Status | Capture | Bluetooth |
 | --- | --- | --- | --- |
 | macOS | Supported | CoreGraphics display stream | CoreBluetooth |
-| Windows | Supported | Win32 / GDI virtual desktop capture | Windows Bluetooth GATT plus BLE advertisement scan fallback |
+| Windows | Supported | Win32 / GDI virtual desktop capture | Native WinRT BLE advertisement scan and GATT writes |
 | Linux | Supported | X11 / XWayland virtual desktop capture | BlueZ |
 
 The app uses the same shared color pipeline on every platform. Platform-specific
@@ -72,10 +72,32 @@ code is isolated under `src/macos`, `src/platform/windows`, and
 ## Platform Notes
 
 - macOS requires Screen Recording and Bluetooth permissions.
-- Windows Bluetooth can require the strip to be visible to the Windows Bluetooth
-  stack before GATT writes are available. Scan also listens for BJ_LED BLE
-  advertisements.
-- Linux requires X11 or XWayland and BlueZ.
+- Windows scans BLE advertisements and connects by address. Normal Windows
+  Bluetooth pairing is not required for the primary path.
+- Linux requires X11 or XWayland, BlueZ, D-Bus access, and a powered Bluetooth
+  adapter. If scan cannot see the strip, check that `bluetooth.service` is
+  running, the adapter is powered on, `rfkill` is unblocked, and your user has
+  Bluetooth permissions where the distro requires a `bluetooth` group.
+
+## Manual Validation
+
+Windows:
+
+```text
+Scan -> BJ_LED candidate appears with address/RSSI
+Connect -> strip ready
+Red / Green / Blue / White -> strip color changes
+Auto -> live screen colors write without freezing the UI
+```
+
+Linux under X11 or XWayland:
+
+```text
+Scan -> BJ_LED candidate appears with address/RSSI
+Connect -> GATT services resolve
+Red / Green / Blue / White -> strip color changes
+Auto -> live screen colors write without freezing the UI
+```
 
 ## Security Note
 
