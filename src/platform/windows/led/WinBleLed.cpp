@@ -17,8 +17,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cwchar>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -248,31 +250,52 @@ std::vector<WinBleDeviceInfo> WinBleLed::scan(int timeoutMs, int limit) {
         adv::BluetoothLEAdvertisementWatcher watcher;
         watcher.ScanningMode(adv::BluetoothLEScanningMode::Active);
 
-        std::mutex mutex;
-        auto token = watcher.Received([&](const adv::BluetoothLEAdvertisementWatcher&, const adv::BluetoothLEAdvertisementReceivedEventArgs& args) {
-            const winrt::hstring localName = args.Advertisement().LocalName();
-            const std::string name = narrowAscii(localName);
-            if (!bj::ble::isBjLedName(name)) return;
+        struct ScanState {
+            std::mutex mutex;
+            std::vector<WinBleDeviceInfo> devices;
+            std::atomic_bool limitReached {false};
+        };
+        auto state = std::make_shared<ScanState>();
+        const int candidateLimit = std::max(1, limit);
+        auto token = watcher.Received([state, candidateLimit](const adv::BluetoothLEAdvertisementWatcher&, const adv::BluetoothLEAdvertisementReceivedEventArgs& args) noexcept {
+            try {
+                const winrt::hstring localName = args.Advertisement().LocalName();
+                const std::string name = narrowAscii(localName);
+                if (!bj::ble::isBjLedName(name)) return;
 
-            std::lock_guard<std::mutex> lock(mutex);
-            const uint64_t address = args.BluetoothAddress();
-            auto existing = std::find_if(devices.begin(), devices.end(), [address](const WinBleDeviceInfo& device) {
-                return device.address == address;
-            });
-            if (existing == devices.end()) {
-                devices.push_back({address, wideString(localName), args.RawSignalStrengthInDBm()});
-            } else if (args.RawSignalStrengthInDBm() > existing->rssi) {
-                existing->rssi = args.RawSignalStrengthInDBm();
-                existing->name = wideString(localName);
+                std::lock_guard<std::mutex> lock(state->mutex);
+                const uint64_t address = args.BluetoothAddress();
+                auto existing = std::find_if(state->devices.begin(), state->devices.end(), [address](const WinBleDeviceInfo& device) {
+                    return device.address == address;
+                });
+                if (existing == state->devices.end()) {
+                    state->devices.push_back({address, wideString(localName), args.RawSignalStrengthInDBm()});
+                } else if (args.RawSignalStrengthInDBm() > existing->rssi) {
+                    existing->rssi = args.RawSignalStrengthInDBm();
+                    existing->name = wideString(localName);
+                }
+                if (int(state->devices.size()) >= candidateLimit) state->limitReached = true;
+            } catch (...) {
             }
-            if (int(devices.size()) >= limit) watcher.Stop();
         });
 
         watcher.Start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(std::max(500, timeoutMs)));
-        watcher.Stop();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(500, timeoutMs));
+        while (std::chrono::steady_clock::now() < deadline && !state->limitReached.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        try {
+            watcher.Stop();
+        } catch (...) {
+        }
         watcher.Received(token);
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            devices = state->devices;
+        }
     } catch (const winrt::hresult_error&) {
+        return devices;
+    } catch (...) {
         return devices;
     }
 
