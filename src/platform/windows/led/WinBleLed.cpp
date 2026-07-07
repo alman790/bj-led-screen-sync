@@ -7,7 +7,7 @@
 #include <bluetoothleapis.h>
 #include <setupapi.h>
 
-#include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
+#include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -21,10 +21,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <cwchar>
-#include <cstdio>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -74,6 +72,267 @@ static std::string narrowAscii(const std::wstring& text) {
     out.reserve(text.size());
     for (wchar_t c : text) out.push_back(c <= 0x7f ? char(c) : '?');
     return out;
+}
+
+static std::wstring readDeviceProperty(HDEVINFO deviceInfo, SP_DEVINFO_DATA& deviceData, DWORD property) {
+    DWORD type = 0;
+    DWORD required = 0;
+    SetupDiGetDeviceRegistryPropertyW(deviceInfo, &deviceData, property, &type, nullptr, 0, &required);
+    if (!required || type != REG_SZ) return {};
+
+    std::vector<wchar_t> buffer((required / sizeof(wchar_t)) + 1);
+    if (!SetupDiGetDeviceRegistryPropertyW(
+            deviceInfo,
+            &deviceData,
+            property,
+            &type,
+            reinterpret_cast<PBYTE>(buffer.data()),
+            required,
+            nullptr)) {
+        return {};
+    }
+    buffer.back() = L'\0';
+    return std::wstring(buffer.data());
+}
+
+static bool isHex(wchar_t c) {
+    return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F');
+}
+
+static int hexValue(wchar_t c) {
+    if (c >= L'0' && c <= L'9') return int(c - L'0');
+    if (c >= L'a' && c <= L'f') return 10 + int(c - L'a');
+    if (c >= L'A' && c <= L'F') return 10 + int(c - L'A');
+    return 0;
+}
+
+static uint64_t parseAddressFromWideText(const std::wstring& text) {
+    for (size_t i = 0; i + 12 <= text.size(); ++i) {
+        bool ok = true;
+        uint64_t value = 0;
+        for (size_t n = 0; n < 12; ++n) {
+            const wchar_t c = text[i + n];
+            if (!isHex(c)) {
+                ok = false;
+                break;
+            }
+            value = (value << 4U) | uint64_t(hexValue(c));
+        }
+        if (!ok) continue;
+        const bool leftOk = i == 0 || !isHex(text[i - 1]);
+        const bool rightOk = i + 12 == text.size() || !isHex(text[i + 12]);
+        if (leftOk && rightOk && value != 0) return value;
+    }
+    return 0;
+}
+
+static std::wstring propertyString(const winrt::Windows::Foundation::Collections::IMapView<winrt::hstring, winrt::Windows::Foundation::IInspectable>& properties, const wchar_t* key) {
+    try {
+        const auto value = properties.Lookup(key);
+        if (!value) return {};
+        return std::wstring(winrt::unbox_value_or<winrt::hstring>(value, L""));
+    } catch (...) {
+        return {};
+    }
+}
+
+static int propertySignalStrength(const winrt::Windows::Foundation::Collections::IMapView<winrt::hstring, winrt::Windows::Foundation::IInspectable>& properties) {
+    try {
+        const auto value = properties.Lookup(L"System.Devices.Aep.SignalStrength");
+        if (!value) return -127;
+        return winrt::unbox_value_or<int32_t>(value, -127);
+    } catch (...) {
+        return -127;
+    }
+}
+
+static uint64_t parseDeviceAddress(const winrt::hstring& id, const winrt::Windows::Foundation::Collections::IMapView<winrt::hstring, winrt::Windows::Foundation::IInspectable>& properties) {
+    const std::wstring address = propertyString(properties, L"System.Devices.Aep.DeviceAddress");
+    if (auto parsed = bj::ble::parseBluetoothAddress(narrowAscii(address))) return *parsed;
+    return parseAddressFromWideText(std::wstring(id.c_str(), id.size()));
+}
+
+static bool hasBjLedCharacteristic(HANDLE device) {
+    USHORT serviceCount = 0;
+    HRESULT hr = BluetoothGATTGetServices(device, 0, nullptr, &serviceCount, BLUETOOTH_GATT_FLAG_NONE);
+    if (hr != HRESULT_FROM_WIN32(ERROR_MORE_DATA) || serviceCount == 0) return false;
+
+    std::vector<BTH_LE_GATT_SERVICE> services(serviceCount);
+    hr = BluetoothGATTGetServices(device, serviceCount, services.data(), &serviceCount, BLUETOOTH_GATT_FLAG_NONE);
+    if (FAILED(hr)) return false;
+
+    for (const BTH_LE_GATT_SERVICE& service : services) {
+        USHORT characteristicCount = 0;
+        hr = BluetoothGATTGetCharacteristics(device, const_cast<BTH_LE_GATT_SERVICE*>(&service), 0, nullptr, &characteristicCount, BLUETOOTH_GATT_FLAG_NONE);
+        if (hr != HRESULT_FROM_WIN32(ERROR_MORE_DATA) || characteristicCount == 0) continue;
+
+        std::vector<BTH_LE_GATT_CHARACTERISTIC> characteristics(characteristicCount);
+        hr = BluetoothGATTGetCharacteristics(
+            device,
+            const_cast<BTH_LE_GATT_SERVICE*>(&service),
+            characteristicCount,
+            characteristics.data(),
+            &characteristicCount,
+            BLUETOOTH_GATT_FLAG_NONE);
+        if (FAILED(hr)) continue;
+
+        for (const BTH_LE_GATT_CHARACTERISTIC& characteristic : characteristics) {
+            if (isBjLedCharacteristic(characteristic.CharacteristicUuid)) return true;
+        }
+    }
+    return false;
+}
+
+static std::vector<WinBleDeviceInfo> scanKnownGattDevices(int limit) {
+    std::vector<WinBleDeviceInfo> devices;
+    HDEVINFO deviceInfo = SetupDiGetClassDevsW(
+        &GUID_BLUETOOTHLE_DEVICE_INTERFACE,
+        nullptr,
+        nullptr,
+        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    if (deviceInfo == INVALID_HANDLE_VALUE) return devices;
+
+    for (DWORD index = 0; int(devices.size()) < limit; ++index) {
+        SP_DEVICE_INTERFACE_DATA interfaceData {};
+        interfaceData.cbSize = sizeof(interfaceData);
+        if (!SetupDiEnumDeviceInterfaces(deviceInfo, nullptr, &GUID_BLUETOOTHLE_DEVICE_INTERFACE, index, &interfaceData)) break;
+
+        DWORD requiredSize = 0;
+        SetupDiGetDeviceInterfaceDetailW(deviceInfo, &interfaceData, nullptr, 0, &requiredSize, nullptr);
+        if (!requiredSize) continue;
+
+        std::vector<unsigned char> detailBuffer(requiredSize);
+        auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(detailBuffer.data());
+        detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+
+        SP_DEVINFO_DATA deviceData {};
+        deviceData.cbSize = sizeof(deviceData);
+        if (!SetupDiGetDeviceInterfaceDetailW(deviceInfo, &interfaceData, detail, requiredSize, nullptr, &deviceData)) continue;
+
+        HANDLE device = CreateFileW(
+            detail->DevicePath,
+            GENERIC_WRITE | GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (device == INVALID_HANDLE_VALUE) continue;
+
+        const bool compatible = hasBjLedCharacteristic(device);
+        CloseHandle(device);
+        if (!compatible) continue;
+
+        std::wstring name = readDeviceProperty(deviceInfo, deviceData, SPDRP_FRIENDLYNAME);
+        if (name.empty()) name = readDeviceProperty(deviceInfo, deviceData, SPDRP_DEVICEDESC);
+        if (name.empty()) name = L"BJ_LED";
+
+        const uint64_t address = parseAddressFromWideText(detail->DevicePath);
+        const auto existing = std::find_if(devices.begin(), devices.end(), [address](const WinBleDeviceInfo& item) {
+            return address != 0 && item.address == address;
+        });
+        if (existing != devices.end()) continue;
+
+        devices.push_back({address, name, -127});
+    }
+
+    SetupDiDestroyDeviceInfoList(deviceInfo);
+    return devices;
+}
+
+static std::vector<WinBleDeviceInfo> scanWinrtDevices(int timeoutMs, int limit) {
+    std::vector<WinBleDeviceInfo> devices;
+    try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        namespace bt = winrt::Windows::Devices::Bluetooth;
+        namespace enumeration = winrt::Windows::Devices::Enumeration;
+
+        auto requestedProperties = winrt::single_threaded_vector<winrt::hstring>();
+        requestedProperties.Append(L"System.Devices.Aep.DeviceAddress");
+        requestedProperties.Append(L"System.Devices.Aep.SignalStrength");
+
+        auto watcher = enumeration::DeviceInformation::CreateWatcher(bt::BluetoothLEDevice::GetDeviceSelector(), requestedProperties);
+        struct ScanState {
+            std::mutex mutex;
+            std::vector<WinBleDeviceInfo> devices;
+            std::atomic_bool limitReached {false};
+        };
+        auto state = std::make_shared<ScanState>();
+        const int candidateLimit = std::max(1, limit);
+
+        auto addOrUpdate = [state, candidateLimit](const winrt::hstring& id, const winrt::hstring& name, const auto& properties) noexcept {
+            try {
+                const std::string asciiName = narrowAscii(name);
+                if (!bj::ble::isBjLedName(asciiName)) return;
+
+                WinBleDeviceInfo candidate;
+                candidate.address = parseDeviceAddress(id, properties);
+                candidate.name = wideString(name);
+                candidate.rssi = propertySignalStrength(properties);
+
+                std::lock_guard<std::mutex> lock(state->mutex);
+                auto existing = std::find_if(state->devices.begin(), state->devices.end(), [&candidate](const WinBleDeviceInfo& device) {
+                    return (candidate.address != 0 && device.address == candidate.address) || device.name == candidate.name;
+                });
+                if (existing == state->devices.end()) {
+                    state->devices.push_back(candidate);
+                } else {
+                    if (candidate.address != 0) existing->address = candidate.address;
+                    if (!candidate.name.empty()) existing->name = candidate.name;
+                    if (candidate.rssi > existing->rssi) existing->rssi = candidate.rssi;
+                }
+                if (int(state->devices.size()) >= candidateLimit) state->limitReached = true;
+            } catch (...) {
+            }
+        };
+
+        auto addedToken = watcher.Added([addOrUpdate](const enumeration::DeviceWatcher&, const enumeration::DeviceInformation& info) noexcept {
+            addOrUpdate(info.Id(), info.Name(), info.Properties());
+        });
+        auto updatedToken = watcher.Updated([state](const enumeration::DeviceWatcher&, const enumeration::DeviceInformationUpdate& update) noexcept {
+            try {
+                const uint64_t address = parseDeviceAddress(update.Id(), update.Properties());
+                const int rssi = propertySignalStrength(update.Properties());
+                if (address == 0 && rssi <= -127) return;
+
+                std::lock_guard<std::mutex> lock(state->mutex);
+                for (WinBleDeviceInfo& device : state->devices) {
+                    if (address != 0 && device.address == address) {
+                        if (rssi > device.rssi) device.rssi = rssi;
+                        return;
+                    }
+                }
+            } catch (...) {
+            }
+        });
+
+        watcher.Start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(800, timeoutMs));
+        while (std::chrono::steady_clock::now() < deadline && !state->limitReached.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        }
+        try {
+            watcher.Stop();
+        } catch (...) {
+        }
+        watcher.Added(addedToken);
+        watcher.Updated(updatedToken);
+
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            devices = state->devices;
+        }
+    } catch (...) {
+        return {};
+    }
+
+    std::sort(devices.begin(), devices.end(), [](const WinBleDeviceInfo& a, const WinBleDeviceInfo& b) {
+        const bool exactA = a.name == L"BJ_LED" || a.name == L"BJ_LED_M";
+        const bool exactB = b.name == L"BJ_LED" || b.name == L"BJ_LED_M";
+        if (exactA != exactB) return exactA;
+        return a.rssi > b.rssi;
+    });
+    return devices;
 }
 
 WinBleLed::~WinBleLed() {
@@ -246,149 +505,11 @@ void WinBleLed::write(bj::RGB color, int maxChannel) {
 }
 
 std::vector<WinBleDeviceInfo> WinBleLed::scan(int timeoutMs, int limit) {
-    std::vector<WinBleDeviceInfo> devices;
-    wchar_t modulePath[MAX_PATH] {};
-    if (!GetModuleFileNameW(nullptr, modulePath, MAX_PATH)) return devices;
-
-    SECURITY_ATTRIBUTES security {};
-    security.nLength = sizeof(security);
-    security.bInheritHandle = TRUE;
-
-    HANDLE readPipe = nullptr;
-    HANDLE writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &security, 0)) return devices;
-    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
-
-    wchar_t commandLine[MAX_PATH + 64] {};
-    std::swprintf(commandLine, MAX_PATH + 64, L"\"%ls\" --ble-scan-child", modulePath);
-
-    STARTUPINFOW startup {};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    startup.hStdOutput = writePipe;
-    startup.hStdError = writePipe;
-
-    PROCESS_INFORMATION process {};
-    const BOOL created = CreateProcessW(
-        nullptr,
-        commandLine,
-        nullptr,
-        nullptr,
-        TRUE,
-        CREATE_NO_WINDOW,
-        nullptr,
-        nullptr,
-        &startup,
-        &process);
-    CloseHandle(writePipe);
-
-    if (!created) {
-        CloseHandle(readPipe);
-        return devices;
-    }
-
-    const DWORD waitMs = DWORD(std::max(1000, timeoutMs + 2500));
-    const DWORD waitResult = WaitForSingleObject(process.hProcess, waitMs);
-    if (waitResult == WAIT_TIMEOUT) {
-        TerminateProcess(process.hProcess, 124);
-        WaitForSingleObject(process.hProcess, 1000);
-    }
-
-    std::string output;
-    char buffer[512];
-    DWORD read = 0;
-    while (ReadFile(readPipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
-        output.append(buffer, buffer + read);
-    }
-    CloseHandle(readPipe);
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-
-    std::istringstream stream(output);
-    std::string line;
-    while (std::getline(stream, line)) {
-        std::istringstream row(line);
-        std::string addressText;
-        std::string rssiText;
-        std::string name;
-        if (!std::getline(row, addressText, '\t')) continue;
-        if (!std::getline(row, rssiText, '\t')) continue;
-        std::getline(row, name);
-        auto address = bj::ble::parseBluetoothAddress(addressText);
-        if (!address) continue;
-        WinBleDeviceInfo info;
-        info.address = *address;
-        info.rssi = std::atoi(rssiText.c_str());
-        info.name = std::wstring(name.begin(), name.end());
-        devices.push_back(info);
-        if (int(devices.size()) >= limit) break;
-    }
-    return devices;
+    auto devices = scanWinrtDevices(timeoutMs, limit);
+    if (!devices.empty()) return devices;
+    return scanKnownGattDevices(std::max(1, limit));
 }
 
 std::vector<WinBleDeviceInfo> WinBleLed::scanInProcess(int timeoutMs, int limit) {
-    std::vector<WinBleDeviceInfo> devices;
-    try {
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        namespace adv = winrt::Windows::Devices::Bluetooth::Advertisement;
-        adv::BluetoothLEAdvertisementWatcher watcher;
-        watcher.ScanningMode(adv::BluetoothLEScanningMode::Active);
-
-        struct ScanState {
-            std::mutex mutex;
-            std::vector<WinBleDeviceInfo> devices;
-            std::atomic_bool limitReached {false};
-        };
-        auto state = std::make_shared<ScanState>();
-        const int candidateLimit = std::max(1, limit);
-        auto token = watcher.Received([state, candidateLimit](const adv::BluetoothLEAdvertisementWatcher&, const adv::BluetoothLEAdvertisementReceivedEventArgs& args) noexcept {
-            try {
-                const winrt::hstring localName = args.Advertisement().LocalName();
-                const std::string name = narrowAscii(localName);
-                if (!bj::ble::isBjLedName(name)) return;
-
-                std::lock_guard<std::mutex> lock(state->mutex);
-                const uint64_t address = args.BluetoothAddress();
-                auto existing = std::find_if(state->devices.begin(), state->devices.end(), [address](const WinBleDeviceInfo& device) {
-                    return device.address == address;
-                });
-                if (existing == state->devices.end()) {
-                    state->devices.push_back({address, wideString(localName), args.RawSignalStrengthInDBm()});
-                } else if (args.RawSignalStrengthInDBm() > existing->rssi) {
-                    existing->rssi = args.RawSignalStrengthInDBm();
-                    existing->name = wideString(localName);
-                }
-                if (int(state->devices.size()) >= candidateLimit) state->limitReached = true;
-            } catch (...) {
-            }
-        });
-
-        watcher.Start();
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(500, timeoutMs));
-        while (std::chrono::steady_clock::now() < deadline && !state->limitReached.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        try {
-            watcher.Stop();
-        } catch (...) {
-        }
-        watcher.Received(token);
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            devices = state->devices;
-        }
-    } catch (const winrt::hresult_error&) {
-        return devices;
-    } catch (...) {
-        return devices;
-    }
-
-    std::sort(devices.begin(), devices.end(), [](const WinBleDeviceInfo& a, const WinBleDeviceInfo& b) {
-        const bool exactA = a.name == L"BJ_LED" || a.name == L"BJ_LED_M";
-        const bool exactB = b.name == L"BJ_LED" || b.name == L"BJ_LED_M";
-        if (exactA != exactB) return exactA;
-        return a.rssi > b.rssi;
-    });
-    return devices;
+    return scan(timeoutMs, limit);
 }
