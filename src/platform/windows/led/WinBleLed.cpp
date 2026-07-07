@@ -19,9 +19,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cwchar>
+#include <cstdio>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -243,6 +246,88 @@ void WinBleLed::write(bj::RGB color, int maxChannel) {
 }
 
 std::vector<WinBleDeviceInfo> WinBleLed::scan(int timeoutMs, int limit) {
+    std::vector<WinBleDeviceInfo> devices;
+    wchar_t modulePath[MAX_PATH] {};
+    if (!GetModuleFileNameW(nullptr, modulePath, MAX_PATH)) return devices;
+
+    SECURITY_ATTRIBUTES security {};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &security, 0)) return devices;
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    wchar_t commandLine[MAX_PATH + 64] {};
+    std::swprintf(commandLine, MAX_PATH + 64, L"\"%ls\" --ble-scan-child", modulePath);
+
+    STARTUPINFOW startup {};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = writePipe;
+    startup.hStdError = writePipe;
+
+    PROCESS_INFORMATION process {};
+    const BOOL created = CreateProcessW(
+        nullptr,
+        commandLine,
+        nullptr,
+        nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &startup,
+        &process);
+    CloseHandle(writePipe);
+
+    if (!created) {
+        CloseHandle(readPipe);
+        return devices;
+    }
+
+    const DWORD waitMs = DWORD(std::max(1000, timeoutMs + 2500));
+    const DWORD waitResult = WaitForSingleObject(process.hProcess, waitMs);
+    if (waitResult == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 124);
+        WaitForSingleObject(process.hProcess, 1000);
+    }
+
+    std::string output;
+    char buffer[512];
+    DWORD read = 0;
+    while (ReadFile(readPipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+        output.append(buffer, buffer + read);
+    }
+    CloseHandle(readPipe);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+
+    std::istringstream stream(output);
+    std::string line;
+    while (std::getline(stream, line)) {
+        std::istringstream row(line);
+        std::string addressText;
+        std::string rssiText;
+        std::string name;
+        if (!std::getline(row, addressText, '\t')) continue;
+        if (!std::getline(row, rssiText, '\t')) continue;
+        std::getline(row, name);
+        auto address = bj::ble::parseBluetoothAddress(addressText);
+        if (!address) continue;
+        WinBleDeviceInfo info;
+        info.address = *address;
+        info.rssi = std::atoi(rssiText.c_str());
+        info.name = std::wstring(name.begin(), name.end());
+        devices.push_back(info);
+        if (int(devices.size()) >= limit) break;
+    }
+    return devices;
+}
+
+std::vector<WinBleDeviceInfo> WinBleLed::scanInProcess(int timeoutMs, int limit) {
     std::vector<WinBleDeviceInfo> devices;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
