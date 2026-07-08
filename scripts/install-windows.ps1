@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$Version = if ($env:BJ_LED_VERSION) { $env:BJ_LED_VERSION } else { "0.1.16" }
+$Version = if ($env:BJ_LED_VERSION) { $env:BJ_LED_VERSION } else { "0.1.17" }
 $Repository = if ($env:BJ_LED_REPOSITORY) { $env:BJ_LED_REPOSITORY } else { "alman790/bj-led-screen-sync" }
 $BaseUrl = if ($env:BJ_LED_RELEASE_BASE_URL) { $env:BJ_LED_RELEASE_BASE_URL } else { "https://github.com/$Repository/releases/download/v$Version/" }
 $TempDir = Join-Path $env:TEMP ("bj-led-" + [guid]::NewGuid().ToString("N"))
