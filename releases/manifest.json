@@ -1,53 +1,53 @@
 {
   "name": "BJ LED Ambilight",
-  "latest": "0.1.15",
+  "latest": "0.1.16",
   "repository": "alman790/bj-led-screen-sync",
   "versions": [
     {
-      "version": "0.1.15",
-      "tag": "v0.1.15",
-      "base_url": "https://github.com/alman790/bj-led-screen-sync/releases/download/v0.1.15/",
+      "version": "0.1.16",
+      "tag": "v0.1.16",
+      "base_url": "https://github.com/alman790/bj-led-screen-sync/releases/download/v0.1.16/",
       "files": [
         {
           "platform": "macos",
           "type": "dmg",
-          "name": "BJLEDAmbilight-0.1.15-macos.dmg",
+          "name": "BJLEDAmbilight-0.1.16-macos.dmg",
           "sha256": ""
         },
         {
           "platform": "macos",
           "type": "zip",
-          "name": "BJLEDAmbilight-0.1.15-macos.zip",
+          "name": "BJLEDAmbilight-0.1.16-macos.zip",
           "sha256": ""
         },
         {
           "platform": "linux",
           "type": "deb",
-          "name": "bj-led-ambilight_0.1.15_amd64.deb",
+          "name": "bj-led-ambilight_0.1.16_amd64.deb",
           "sha256": ""
         },
         {
           "platform": "linux",
           "type": "tar.gz",
-          "name": "bj-led-ambilight-0.1.15-linux-amd64.tar.gz",
+          "name": "bj-led-ambilight-0.1.16-linux-amd64.tar.gz",
           "sha256": ""
         },
         {
           "platform": "windows",
           "type": "setup.exe",
-          "name": "BJLEDAmbilight-0.1.15-windows-x64-setup.exe",
+          "name": "BJLEDAmbilight-0.1.16-windows-x64-setup.exe",
           "sha256": ""
         },
         {
           "platform": "windows",
           "type": "zip",
-          "name": "BJLEDAmbilight-0.1.15-windows-x64.zip",
+          "name": "BJLEDAmbilight-0.1.16-windows-x64.zip",
           "sha256": ""
         },
         {
           "platform": "source",
           "type": "zip",
-          "name": "BJLEDAmbilight-0.1.15-source.zip",
+          "name": "BJLEDAmbilight-0.1.16-source.zip",
           "sha256": ""
         }
       ]
