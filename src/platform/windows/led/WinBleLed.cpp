@@ -374,7 +374,7 @@ static std::vector<WinBleDeviceInfo> scanChildProcess(int timeoutMs, int limit) 
         startup.wShowWindow = SW_HIDE;
         startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
         startup.hStdOutput = writePipe.get();
-        startup.hStdError = writePipe.get();
+        startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
         PROCESS_INFORMATION processInfo {};
         const BOOL created = CreateProcessW(
@@ -394,18 +394,44 @@ static std::vector<WinBleDeviceInfo> scanChildProcess(int timeoutMs, int limit) 
         UniqueHandle thread(processInfo.hThread);
         writePipe.reset();
 
-        const DWORD waitMs = DWORD(std::max(1000, timeoutMs + 2500));
-        const DWORD waitResult = WaitForSingleObject(process.get(), waitMs);
-        if (waitResult == WAIT_TIMEOUT) {
-            TerminateProcess(process.get(), 124);
-            WaitForSingleObject(process.get(), 1000);
-        }
-
         std::string output;
         char buffer[512];
-        DWORD read = 0;
-        while (ReadFile(readPipe.get(), buffer, sizeof(buffer), &read, nullptr) && read > 0) {
-            output.append(buffer, buffer + read);
+        const int boundedTimeoutMs = std::clamp(timeoutMs, 500, 3000);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(boundedTimeoutMs);
+        bool timedOut = false;
+        for (;;) {
+            DWORD available = 0;
+            if (PeekNamedPipe(readPipe.get(), nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+                const DWORD wanted = std::min<DWORD>(available, sizeof(buffer));
+                DWORD read = 0;
+                if (ReadFile(readPipe.get(), buffer, wanted, &read, nullptr) && read > 0) {
+                    output.append(buffer, buffer + read);
+                }
+                continue;
+            }
+
+            const DWORD waitResult = WaitForSingleObject(process.get(), 0);
+            if (waitResult == WAIT_OBJECT_0) {
+                if (!PeekNamedPipe(readPipe.get(), nullptr, 0, nullptr, &available, nullptr) || available == 0) break;
+                continue;
+            }
+
+            if (std::chrono::steady_clock::now() >= deadline) {
+                timedOut = true;
+                TerminateProcess(process.get(), 124);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        if (timedOut) {
+            DWORD available = 0;
+            while (PeekNamedPipe(readPipe.get(), nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+                const DWORD wanted = std::min<DWORD>(available, sizeof(buffer));
+                DWORD read = 0;
+                if (!ReadFile(readPipe.get(), buffer, wanted, &read, nullptr) || read == 0) break;
+                output.append(buffer, buffer + read);
+            }
         }
         return parseScanOutput(output, limit);
     } catch (...) {

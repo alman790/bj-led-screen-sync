@@ -184,6 +184,7 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
                 delete reinterpret_cast<WinBleDeviceInfo*>(lparam);
                 break;
             }
+            scanInFlight_ = false;
             std::unique_ptr<WinBleDeviceInfo> device(reinterpret_cast<WinBleDeviceInfo*>(lparam));
             deviceFound_ = device && device->address != 0;
             selectedAddress_ = deviceFound_ ? device->address : 0;
@@ -415,12 +416,17 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
             if (contains(modeRect_, x, y)) {
                 cycleMode();
             }
-            if (contains(scanRect_, x, y) && !scanInFlight_.exchange(true)) {
-                if (scanThread_.joinable()) scanThread_.join();
+            if (contains(scanRect_, x, y)) {
+                if (scanInFlight_.exchange(true)) {
+                    appendLog(L"BLE scan already running");
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return;
+                }
                 deviceLabel_ = L"Scanning...";
                 selectedAddress_ = 0;
                 appendLog(L"BLE scan started");
-                scanThread_ = std::thread([this] {
+                const HWND hwnd = hwnd_;
+                std::thread([hwnd] {
                     std::unique_ptr<WinBleDeviceInfo> selected(new WinBleDeviceInfo());
                     try {
                         auto devices = WinBleLed::scan();
@@ -429,10 +435,9 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
                         }
                     } catch (...) {
                     }
-                    scanInFlight_ = false;
-                    if (stopping_) return;
-                    PostMessageW(hwnd_, WM_APP + 2, selected->address ? 1 : 0, reinterpret_cast<LPARAM>(selected.release()));
-                });
+                    if (!PostMessageW(hwnd, WM_APP + 2, selected->address ? 1 : 0, reinterpret_cast<LPARAM>(selected.get()))) return;
+                    selected.release();
+                }).detach();
             }
             if (contains(connectRect_, x, y) && !connectInFlight_.exchange(true)) {
                 if (connectThread_.joinable()) connectThread_.join();
@@ -504,7 +509,6 @@ void WinApp::cycleMode() {
 }
 
 void WinApp::joinWorkers() {
-    if (scanThread_.joinable()) scanThread_.join();
     if (connectThread_.joinable()) connectThread_.join();
     if (writeThread_.joinable()) writeThread_.join();
 }

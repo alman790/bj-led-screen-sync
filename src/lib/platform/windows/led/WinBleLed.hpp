@@ -31,8 +31,8 @@ public:
     bool connect(uint64_t address);
     bool isReady() const;
     void write(bj::RGB color, int maxChannel);
-    static std::vector<WinBleDeviceInfo> scan(int timeoutMs = 6000, int limit = 12);
-    static std::vector<WinBleDeviceInfo> scanInProcess(int timeoutMs = 6000, int limit = 12);
+    static std::vector<WinBleDeviceInfo> scan(int timeoutMs = 3000, int limit = 12);
+    static std::vector<WinBleDeviceInfo> scanInProcess(int timeoutMs = 2500, int limit = 12);
 
 private:
     void close();

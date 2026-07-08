@@ -105,7 +105,6 @@ private:
     std::atomic_bool connectInFlight_ {false};
     std::atomic_bool scanInFlight_ {false};
     std::atomic_bool stopping_ {false};
-    std::thread scanThread_;
     std::thread connectThread_;
     std::thread writeThread_;
     GdiScreenCapture* capture_ = nullptr;
