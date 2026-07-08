@@ -22,6 +22,7 @@
 #include <cwchar>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +32,39 @@ struct WinBleLed::CharacteristicStorage {
     winrt::Windows::Devices::Bluetooth::BluetoothLEDevice winrtDevice {nullptr};
     winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic winrtCharacteristic {nullptr};
     bool usesWinrt = false;
+};
+
+struct UniqueHandle {
+    HANDLE value = nullptr;
+    UniqueHandle() = default;
+    explicit UniqueHandle(HANDLE handle) : value(handle) {}
+    ~UniqueHandle() { reset(); }
+    UniqueHandle(const UniqueHandle&) = delete;
+    UniqueHandle& operator=(const UniqueHandle&) = delete;
+    UniqueHandle(UniqueHandle&& other) noexcept : value(other.value) { other.value = nullptr; }
+    UniqueHandle& operator=(UniqueHandle&& other) noexcept {
+        if (this != &other) {
+            reset();
+            value = other.value;
+            other.value = nullptr;
+        }
+        return *this;
+    }
+    HANDLE get() const { return value; }
+    HANDLE* put() {
+        reset();
+        return &value;
+    }
+    HANDLE release() {
+        HANDLE handle = value;
+        value = nullptr;
+        return handle;
+    }
+    void reset(HANDLE handle = nullptr) {
+        if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value);
+        value = handle;
+    }
+    explicit operator bool() const { return value && value != INVALID_HANDLE_VALUE; }
 };
 
 static bool isBjLedCharacteristic(const BTH_LE_UUID& uuid) {
@@ -213,7 +247,7 @@ static std::vector<WinBleDeviceInfo> scanKnownGattDevices(int limit) {
     return devices;
 }
 
-static std::vector<WinBleDeviceInfo> scanWinrtDevices(int timeoutMs, int limit) {
+static std::vector<WinBleDeviceInfo> scanLocal(int timeoutMs, int limit) {
     std::vector<WinBleDeviceInfo> devices;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -278,7 +312,105 @@ static std::vector<WinBleDeviceInfo> scanWinrtDevices(int timeoutMs, int limit) 
         return a.rssi > b.rssi;
     });
     if (int(devices.size()) > limit) devices.resize(size_t(std::max(1, limit)));
+    if (devices.empty()) {
+        const char* allowKnownGatt = std::getenv("BJ_LED_SCAN_KNOWN_GATT");
+        if (allowKnownGatt && std::string(allowKnownGatt) == "1") return scanKnownGattDevices(std::max(1, limit));
+    }
     return devices;
+}
+
+static std::vector<WinBleDeviceInfo> parseScanOutput(const std::string& output, int limit) {
+    std::vector<WinBleDeviceInfo> devices;
+    std::istringstream stream(output);
+    std::string line;
+    while (std::getline(stream, line)) {
+        std::istringstream row(line);
+        std::string addressText;
+        std::string rssiText;
+        std::string name;
+        if (!std::getline(row, addressText, '\t')) continue;
+        if (!std::getline(row, rssiText, '\t')) continue;
+        std::getline(row, name);
+        auto address = bj::ble::parseBluetoothAddress(addressText);
+        if (!address || name.empty()) continue;
+
+        WinBleDeviceInfo info;
+        info.address = *address;
+        info.rssi = std::atoi(rssiText.c_str());
+        info.name = std::wstring(name.begin(), name.end());
+        devices.push_back(info);
+        if (int(devices.size()) >= std::max(1, limit)) break;
+    }
+    return devices;
+}
+
+static std::vector<WinBleDeviceInfo> scanChildProcess(int timeoutMs, int limit) {
+    try {
+        wchar_t modulePath[MAX_PATH] {};
+        if (!GetModuleFileNameW(nullptr, modulePath, MAX_PATH)) return {};
+
+        SECURITY_ATTRIBUTES security {};
+        security.nLength = sizeof(security);
+        security.bInheritHandle = TRUE;
+
+        UniqueHandle readPipe;
+        UniqueHandle writePipe;
+        HANDLE rawRead = nullptr;
+        HANDLE rawWrite = nullptr;
+        if (!CreatePipe(&rawRead, &rawWrite, &security, 0)) return {};
+        readPipe.reset(rawRead);
+        writePipe.reset(rawWrite);
+        SetHandleInformation(readPipe.get(), HANDLE_FLAG_INHERIT, 0);
+
+        std::wstring commandLine = L"\"";
+        commandLine += modulePath;
+        commandLine += L"\" --ble-scan-child";
+        std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
+        mutableCommand.push_back(L'\0');
+
+        STARTUPINFOW startup {};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.wShowWindow = SW_HIDE;
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        startup.hStdOutput = writePipe.get();
+        startup.hStdError = writePipe.get();
+
+        PROCESS_INFORMATION processInfo {};
+        const BOOL created = CreateProcessW(
+            nullptr,
+            mutableCommand.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            CREATE_NO_WINDOW,
+            nullptr,
+            nullptr,
+            &startup,
+            &processInfo);
+        if (!created) return {};
+
+        UniqueHandle process(processInfo.hProcess);
+        UniqueHandle thread(processInfo.hThread);
+        writePipe.reset();
+
+        const DWORD waitMs = DWORD(std::max(1000, timeoutMs + 2500));
+        const DWORD waitResult = WaitForSingleObject(process.get(), waitMs);
+        if (waitResult == WAIT_TIMEOUT) {
+            TerminateProcess(process.get(), 124);
+            WaitForSingleObject(process.get(), 1000);
+        }
+
+        std::string output;
+        char buffer[512];
+        DWORD read = 0;
+        while (ReadFile(readPipe.get(), buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+            output.append(buffer, buffer + read);
+        }
+        return parseScanOutput(output, limit);
+    } catch (...) {
+        return {};
+    }
 }
 
 WinBleLed::~WinBleLed() {
@@ -477,11 +609,9 @@ void WinBleLed::write(bj::RGB color, int maxChannel) {
 }
 
 std::vector<WinBleDeviceInfo> WinBleLed::scan(int timeoutMs, int limit) {
-    auto devices = scanWinrtDevices(timeoutMs, limit);
-    if (!devices.empty()) return devices;
-    return scanKnownGattDevices(std::max(1, limit));
+    return scanChildProcess(timeoutMs, limit);
 }
 
 std::vector<WinBleDeviceInfo> WinBleLed::scanInProcess(int timeoutMs, int limit) {
-    return scan(timeoutMs, limit);
+    return scanLocal(timeoutMs, limit);
 }
