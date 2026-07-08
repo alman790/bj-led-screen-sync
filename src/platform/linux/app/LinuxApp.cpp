@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdio>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -163,6 +164,7 @@ public:
                 if (event.type == ClientMessage && static_cast<Atom>(event.xclient.data.l[0]) == wmDelete_) running = false;
             }
 
+            applyWorkerResults();
             const auto now = std::chrono::steady_clock::now();
             if (now >= nextFrame) {
                 tick();
@@ -172,7 +174,8 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(3));
         }
         stopping_ = true;
-        joinWrite();
+        joinWorkers();
+        applyWorkerResults();
         if (backbuffer_) XFreePixmap(display_, backbuffer_);
         if (gc_) XFreeGC(display_, gc_);
         XCloseDisplay(display_);
@@ -395,31 +398,102 @@ private:
         }
     }
 
-    void joinWrite() {
+    void joinWorkers() {
+        if (scanThread_.joinable()) scanThread_.join();
+        if (connectThread_.joinable()) connectThread_.join();
         if (writeThread_.joinable()) writeThread_.join();
     }
 
     void scanDevices() {
-        appendLog("BLE scan started");
-        auto devices = BlueZLed::scan();
-        if (devices.empty()) {
-            appendLog("BJ_LED not found over BlueZ LE scan");
+        if (scanInFlight_) {
+            appendLog("BLE scan already running");
             return;
         }
-        selectedDevice_ = devices.front();
-        address_ = selectedDevice_.address;
-        deviceLabel_ = selectedDevice_.name + "  RSSI " + std::to_string(selectedDevice_.rssi);
-        appendLog("Found " + selectedDevice_.name + " " + selectedDevice_.address);
+        if (scanThread_.joinable()) scanThread_.join();
+        scanInFlight_ = true;
+        appendLog("BLE scan started");
+        scanThread_ = std::thread([this] {
+            BlueZDeviceInfo found;
+            bool ok = false;
+            try {
+                auto devices = BlueZLed::scan();
+                if (!devices.empty()) {
+                    found = devices.front();
+                    ok = true;
+                }
+            } catch (...) {
+                ok = false;
+            }
+            {
+                std::lock_guard<std::mutex> lock(workerMutex_);
+                pendingScanReady_ = true;
+                pendingScanFound_ = ok;
+                pendingScanDevice_ = found;
+            }
+            scanInFlight_ = false;
+        });
     }
 
     void connectDevice() {
+        if (connectInFlight_) {
+            appendLog("Connection already running");
+            return;
+        }
+        if (connectThread_.joinable()) connectThread_.join();
         if (address_.empty()) {
             appendLog("No device address. Click Scan first.");
             return;
         }
         appendLog("Connecting by BlueZ device path...");
-        connected_ = selectedDevice_.objectPath.empty() ? led_.connect(address_) : led_.connect(selectedDevice_);
-        appendLog(connected_ ? "Strip ready, live writing enabled" : "Could not connect to BJ_LED");
+        connectInFlight_ = true;
+        const std::string address = address_;
+        const BlueZDeviceInfo selected = selectedDevice_;
+        connectThread_ = std::thread([this, address, selected] {
+            bool ok = false;
+            try {
+                ok = selected.objectPath.empty() ? led_.connect(address) : led_.connect(selected);
+            } catch (...) {
+                ok = false;
+            }
+            {
+                std::lock_guard<std::mutex> lock(workerMutex_);
+                pendingConnectReady_ = true;
+                pendingConnected_ = ok;
+            }
+            connectInFlight_ = false;
+        });
+    }
+
+    void applyWorkerResults() {
+        bool scanReady = false;
+        bool scanFound = false;
+        BlueZDeviceInfo scanDevice;
+        bool connectReady = false;
+        bool connectOk = false;
+        {
+            std::lock_guard<std::mutex> lock(workerMutex_);
+            scanReady = pendingScanReady_;
+            scanFound = pendingScanFound_;
+            scanDevice = pendingScanDevice_;
+            connectReady = pendingConnectReady_;
+            connectOk = pendingConnected_;
+            pendingScanReady_ = false;
+            pendingConnectReady_ = false;
+        }
+        if (scanReady) {
+            if (scanFound) {
+                selectedDevice_ = scanDevice;
+                address_ = selectedDevice_.address;
+                deviceLabel_ = selectedDevice_.name + "  " + selectedDevice_.address + "  RSSI " + std::to_string(selectedDevice_.rssi);
+                appendLog("Found " + selectedDevice_.name + " " + selectedDevice_.address);
+            } else {
+                appendLog("BJ_LED not found over BlueZ LE scan");
+            }
+        }
+        if (connectReady) {
+            connected_ = connectOk;
+            appendLog(connected_ ? "Strip ready, live writing enabled" : "Could not connect to BJ_LED");
+        }
     }
 
     std::string address_;
@@ -435,8 +509,18 @@ private:
     bool hasSmoothed_ = false;
     bool connected_ = false;
     std::atomic_bool writeInFlight_ {false};
+    std::atomic_bool scanInFlight_ {false};
+    std::atomic_bool connectInFlight_ {false};
     std::atomic_bool stopping_ {false};
+    std::thread scanThread_;
+    std::thread connectThread_;
     std::thread writeThread_;
+    std::mutex workerMutex_;
+    bool pendingScanReady_ = false;
+    bool pendingScanFound_ = false;
+    BlueZDeviceInfo pendingScanDevice_;
+    bool pendingConnectReady_ = false;
+    bool pendingConnected_ = false;
     int outputMode_ = 0;
     int modeIndex_ = 0;
     int activeSlider_ = -1;

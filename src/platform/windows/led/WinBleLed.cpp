@@ -7,7 +7,7 @@
 #include <bluetoothleapis.h>
 #include <setupapi.h>
 
-#include <winrt/Windows.Devices.Enumeration.h>
+#include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
 #include <winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -17,7 +17,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cwchar>
@@ -126,32 +125,6 @@ static uint64_t parseAddressFromWideText(const std::wstring& text) {
     return 0;
 }
 
-static std::wstring propertyString(const winrt::Windows::Foundation::Collections::IMapView<winrt::hstring, winrt::Windows::Foundation::IInspectable>& properties, const wchar_t* key) {
-    try {
-        const auto value = properties.Lookup(key);
-        if (!value) return {};
-        return std::wstring(winrt::unbox_value_or<winrt::hstring>(value, L""));
-    } catch (...) {
-        return {};
-    }
-}
-
-static int propertySignalStrength(const winrt::Windows::Foundation::Collections::IMapView<winrt::hstring, winrt::Windows::Foundation::IInspectable>& properties) {
-    try {
-        const auto value = properties.Lookup(L"System.Devices.Aep.SignalStrength");
-        if (!value) return -127;
-        return winrt::unbox_value_or<int32_t>(value, -127);
-    } catch (...) {
-        return -127;
-    }
-}
-
-static uint64_t parseDeviceAddress(const winrt::hstring& id, const winrt::Windows::Foundation::Collections::IMapView<winrt::hstring, winrt::Windows::Foundation::IInspectable>& properties) {
-    const std::wstring address = propertyString(properties, L"System.Devices.Aep.DeviceAddress");
-    if (auto parsed = bj::ble::parseBluetoothAddress(narrowAscii(address))) return *parsed;
-    return parseAddressFromWideText(std::wstring(id.c_str(), id.size()));
-}
-
 static bool hasBjLedCharacteristic(HANDLE device) {
     USHORT serviceCount = 0;
     HRESULT hr = BluetoothGATTGetServices(device, 0, nullptr, &serviceCount, BLUETOOTH_GATT_FLAG_NONE);
@@ -244,63 +217,36 @@ static std::vector<WinBleDeviceInfo> scanWinrtDevices(int timeoutMs, int limit) 
     std::vector<WinBleDeviceInfo> devices;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        namespace bt = winrt::Windows::Devices::Bluetooth;
-        namespace enumeration = winrt::Windows::Devices::Enumeration;
+        namespace adv = winrt::Windows::Devices::Bluetooth::Advertisement;
 
-        auto requestedProperties = winrt::single_threaded_vector<winrt::hstring>();
-        requestedProperties.Append(L"System.Devices.Aep.DeviceAddress");
-        requestedProperties.Append(L"System.Devices.Aep.SignalStrength");
-
-        auto watcher = enumeration::DeviceInformation::CreateWatcher(bt::BluetoothLEDevice::GetDeviceSelector(), requestedProperties);
+        adv::BluetoothLEAdvertisementWatcher watcher;
+        watcher.ScanningMode(adv::BluetoothLEScanningMode::Active);
         struct ScanState {
             std::mutex mutex;
             std::vector<WinBleDeviceInfo> devices;
-            std::atomic_bool limitReached {false};
         };
         auto state = std::make_shared<ScanState>();
-        const int candidateLimit = std::max(1, limit);
 
-        auto addOrUpdate = [state, candidateLimit](const winrt::hstring& id, const winrt::hstring& name, const auto& properties) noexcept {
+        auto receivedToken = watcher.Received([state](const adv::BluetoothLEAdvertisementWatcher&, const adv::BluetoothLEAdvertisementReceivedEventArgs& args) noexcept {
             try {
-                const std::string asciiName = narrowAscii(name);
+                const winrt::hstring localName = args.Advertisement().LocalName();
+                const std::string asciiName = narrowAscii(localName);
                 if (!bj::ble::isBjLedName(asciiName)) return;
 
                 WinBleDeviceInfo candidate;
-                candidate.address = parseDeviceAddress(id, properties);
-                candidate.name = wideString(name);
-                candidate.rssi = propertySignalStrength(properties);
+                candidate.address = args.BluetoothAddress();
+                candidate.name = wideString(localName);
+                candidate.rssi = args.RawSignalStrengthInDBm();
 
                 std::lock_guard<std::mutex> lock(state->mutex);
                 auto existing = std::find_if(state->devices.begin(), state->devices.end(), [&candidate](const WinBleDeviceInfo& device) {
-                    return (candidate.address != 0 && device.address == candidate.address) || device.name == candidate.name;
+                    return device.address == candidate.address;
                 });
                 if (existing == state->devices.end()) {
                     state->devices.push_back(candidate);
                 } else {
-                    if (candidate.address != 0) existing->address = candidate.address;
-                    if (!candidate.name.empty()) existing->name = candidate.name;
+                    existing->name = candidate.name;
                     if (candidate.rssi > existing->rssi) existing->rssi = candidate.rssi;
-                }
-                if (int(state->devices.size()) >= candidateLimit) state->limitReached = true;
-            } catch (...) {
-            }
-        };
-
-        auto addedToken = watcher.Added([addOrUpdate](const enumeration::DeviceWatcher&, const enumeration::DeviceInformation& info) noexcept {
-            addOrUpdate(info.Id(), info.Name(), info.Properties());
-        });
-        auto updatedToken = watcher.Updated([state](const enumeration::DeviceWatcher&, const enumeration::DeviceInformationUpdate& update) noexcept {
-            try {
-                const uint64_t address = parseDeviceAddress(update.Id(), update.Properties());
-                const int rssi = propertySignalStrength(update.Properties());
-                if (address == 0 && rssi <= -127) return;
-
-                std::lock_guard<std::mutex> lock(state->mutex);
-                for (WinBleDeviceInfo& device : state->devices) {
-                    if (address != 0 && device.address == address) {
-                        if (rssi > device.rssi) device.rssi = rssi;
-                        return;
-                    }
                 }
             } catch (...) {
             }
@@ -308,15 +254,14 @@ static std::vector<WinBleDeviceInfo> scanWinrtDevices(int timeoutMs, int limit) 
 
         watcher.Start();
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(800, timeoutMs));
-        while (std::chrono::steady_clock::now() < deadline && !state->limitReached.load()) {
+        while (std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
         }
         try {
             watcher.Stop();
         } catch (...) {
         }
-        watcher.Added(addedToken);
-        watcher.Updated(updatedToken);
+        watcher.Received(receivedToken);
 
         {
             std::lock_guard<std::mutex> lock(state->mutex);
@@ -332,6 +277,7 @@ static std::vector<WinBleDeviceInfo> scanWinrtDevices(int timeoutMs, int limit) 
         if (exactA != exactB) return exactA;
         return a.rssi > b.rssi;
     });
+    if (int(devices.size()) > limit) devices.resize(size_t(std::max(1, limit)));
     return devices;
 }
 
@@ -501,10 +447,18 @@ void WinBleLed::write(bj::RGB color, int maxChannel) {
             winrt::Windows::Storage::Streams::DataWriter writer;
             writer.WriteBytes(winrt::array_view<const uint8_t>(packet.data(), packet.data() + packet.size()));
             auto buffer = writer.DetachBuffer();
-            auto result = characteristic_->winrtCharacteristic.WriteValueWithResultAsync(buffer, gatt::GattWriteOption::WriteWithResponse).get();
-            if (result.Status() != gatt::GattCommunicationStatus::Success) {
-                characteristic_->winrtCharacteristic.WriteValueWithResultAsync(buffer, gatt::GattWriteOption::WriteWithoutResponse).get();
+            bool written = false;
+            try {
+                auto result = characteristic_->winrtCharacteristic.WriteValueWithResultAsync(buffer, gatt::GattWriteOption::WriteWithResponse).get();
+                written = result.Status() == gatt::GattCommunicationStatus::Success;
+            } catch (...) {
+                written = false;
             }
+            if (!written) {
+                auto result = characteristic_->winrtCharacteristic.WriteValueWithResultAsync(buffer, gatt::GattWriteOption::WriteWithoutResponse).get();
+                written = result.Status() == gatt::GattCommunicationStatus::Success;
+            }
+            ready_ = written;
         } catch (const winrt::hresult_error&) {
             ready_ = false;
         } catch (...) {

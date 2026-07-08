@@ -188,8 +188,8 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             deviceFound_ = device && device->address != 0;
             selectedAddress_ = deviceFound_ ? device->address : 0;
             if (deviceFound_) {
-                wchar_t label[96];
-                std::swprintf(label, 96, L"%ls  RSSI %d", device->name.c_str(), device->rssi);
+                wchar_t label[128];
+                std::swprintf(label, 128, L"%ls  %012llX  RSSI %d", device->name.c_str(), static_cast<unsigned long long>(device->address), device->rssi);
                 deviceLabel_ = label;
                 wchar_t log[160];
                 std::swprintf(log, 160, L"Found %ls address %012llX RSSI %d", device->name.c_str(), static_cast<unsigned long long>(device->address), device->rssi);
