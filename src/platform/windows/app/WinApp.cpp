@@ -175,7 +175,14 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             return 1;
         case WM_APP + 1:
             if (stopping_) break;
+            if (connectThread_.joinable()) connectThread_.join();
+            connectInFlight_ = false;
             connected_ = wparam != 0;
+            if (connected_) {
+                reconnectFailures_ = 0;
+                forceWrite_ = true;
+                requestWrite(selectedOutputColor(frameAnalysis_.output), true);
+            }
             appendLog(wparam ? L"Strip ready, live writing enabled" : L"BJ_LED service not found");
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
@@ -202,6 +209,16 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
         }
+        case WM_APP + 3:
+            if (stopping_) break;
+            handleWriteResult(wparam != 0);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        case WM_APP + 4:
+            if (stopping_) break;
+            handleReconnectResult(wparam != 0);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
@@ -401,12 +418,19 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
         for (int i = 0; i < int(outputRects_.size()); ++i) {
             if (contains(outputRects_[i], x, y)) {
                 setOutputMode(i);
+                requestWrite(selectedOutputColor(frameAnalysis_.output), true);
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return;
             }
         }
-        if (contains(max127Rect_, x, y)) settings_.maxChannel = 127;
-        if (contains(max255Rect_, x, y)) settings_.maxChannel = 255;
+        if (contains(max127Rect_, x, y) && settings_.maxChannel != 127) {
+            settings_.maxChannel = 127;
+            requestWrite(selectedOutputColor(frameAnalysis_.output), true);
+        }
+        if (contains(max255Rect_, x, y) && settings_.maxChannel != 255) {
+            settings_.maxChannel = 255;
+            requestWrite(selectedOutputColor(frameAnalysis_.output), true);
+        }
             if (contains(deviceRect_, x, y)) {
                 appendLog(deviceFound_ ? L"BJ_LED selected" : L"No scanned device yet");
             }
@@ -454,7 +478,6 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
                     } catch (...) {
                         ok = false;
                     }
-                    connectInFlight_ = false;
                     if (stopping_) return;
                     PostMessageW(hwnd_, WM_APP + 1, ok ? 1 : 0, 0);
                 });
@@ -488,6 +511,7 @@ void WinApp::updateSlider(int x) {
     } else if (activeSlider_ == 4) {
         settings_.threshold = slider.value;
     }
+    forceWrite_ = true;
     hasSmoothed_ = false;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -506,6 +530,7 @@ void WinApp::cycleMode() {
             break;
     }
     hasSmoothed_ = false;
+    forceWrite_ = true;
 }
 
 void WinApp::joinWorkers() {
@@ -540,6 +565,7 @@ void WinApp::stop() {
 
 void WinApp::tick() {
     if (stopping_ || !capture_ || movingWindow_) return;
+    maybeReconnect();
     auto pixels = capture_->capture();
     frameAnalysis_ = analyzer_.analyzeFrame(pixels, settings_.sampleWidth, settings_.sampleHeight, settings_);
     bj::RGB color = selectedOutputColor(frameAnalysis_.output);
@@ -549,21 +575,12 @@ void WinApp::tick() {
     hasSmoothed_ = true;
     const auto now = std::chrono::steady_clock::now();
     const bool forceRefresh = now - lastWriteTime_ >= std::chrono::milliseconds(250);
-    const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
+    const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold || lastSentMaxChannel_ != settings_.maxChannel;
     const bool writeWindowOpen = now - lastWriteTime_ >= std::chrono::milliseconds(90);
-    if (led_.isReady() && !connectInFlight_ && writeWindowOpen && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
-        if (writeThread_.joinable()) writeThread_.join();
-        const bj::RGB color = smoothed_;
-        const int maxChannel = settings_.maxChannel;
-        lastSent_ = color;
-        lastWriteTime_ = now;
-        writeThread_ = std::thread([this, color, maxChannel] {
-            try {
-                if (!stopping_) led_.write(color, maxChannel);
-            } catch (...) {
-            }
-            writeInFlight_ = false;
-        });
+    if (led_.isReady() && !connectInFlight_ && writeWindowOpen && (forceWrite_ || colorChanged || forceRefresh)) {
+        const bool force = forceWrite_;
+        forceWrite_ = false;
+        requestWrite(smoothed_, force);
     }
     if (visualChanged) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -581,6 +598,108 @@ bj::RGB WinApp::selectedOutputColor(bj::RGB autoColor) const {
 void WinApp::setOutputMode(int mode) {
     outputMode_ = mode;
     hasSmoothed_ = false;
+    forceWrite_ = true;
+}
+
+void WinApp::requestWrite(bj::RGB color, bool force) {
+    if (stopping_ || !led_.isReady()) return;
+    int maxChannel = settings_.maxChannel;
+    {
+        std::lock_guard<std::mutex> lock(writeMutex_);
+        desiredWrite_ = color;
+        desiredMaxChannel_ = maxChannel;
+        hasDesiredWrite_ = true;
+        if (writeInFlight_) {
+            pendingWrite_ = true;
+            return;
+        }
+    }
+    if (!force && bj::distance(lastSent_, color) < settings_.threshold && lastSentMaxChannel_ == maxChannel) return;
+    startWriteWorker(color, maxChannel);
+}
+
+void WinApp::startWriteWorker(bj::RGB color, int maxChannel) {
+    if (stopping_ || writeInFlight_.exchange(true)) {
+        std::lock_guard<std::mutex> lock(writeMutex_);
+        pendingWrite_ = true;
+        return;
+    }
+    if (writeThread_.joinable()) writeThread_.join();
+    lastSent_ = color;
+    lastSentMaxChannel_ = maxChannel;
+    lastWriteTime_ = std::chrono::steady_clock::now();
+    writeThread_ = std::thread([this, color, maxChannel] {
+        bool ok = false;
+        try {
+            ok = !stopping_ && led_.write(color, maxChannel);
+        } catch (...) {
+            ok = false;
+        }
+        if (!stopping_) PostMessageW(hwnd_, WM_APP + 3, ok ? 1 : 0, 0);
+    });
+}
+
+void WinApp::handleWriteResult(bool ok) {
+    if (writeThread_.joinable()) writeThread_.join();
+    writeInFlight_ = false;
+    if (!ok) {
+        connected_ = false;
+        appendLog(L"Write failed, reconnecting");
+        scheduleReconnect();
+    }
+    bj::RGB color;
+    int maxChannel = 255;
+    bool sendPending = false;
+    {
+        std::lock_guard<std::mutex> lock(writeMutex_);
+        sendPending = pendingWrite_ && hasDesiredWrite_;
+        color = desiredWrite_;
+        maxChannel = desiredMaxChannel_;
+        pendingWrite_ = false;
+    }
+    if (ok && sendPending && led_.isReady()) startWriteWorker(color, maxChannel);
+}
+
+void WinApp::scheduleReconnect() {
+    if (!selectedAddress_) return;
+    const int delays[] {500, 1000, 2000, 5000};
+    const int index = std::min(reconnectFailures_, 3);
+    nextReconnectTime_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(delays[index]);
+    reconnectFailures_ = std::min(reconnectFailures_ + 1, 3);
+}
+
+void WinApp::maybeReconnect() {
+    if (!selectedAddress_ || connected_ || connectInFlight_ || stopping_) return;
+    if (nextReconnectTime_.time_since_epoch().count() == 0) return;
+    if (std::chrono::steady_clock::now() < nextReconnectTime_) return;
+    if (connectThread_.joinable()) connectThread_.join();
+    connectInFlight_ = true;
+    const uint64_t address = selectedAddress_;
+    appendLog(L"Reconnecting to BJ_LED...");
+    connectThread_ = std::thread([this, address] {
+        bool ok = false;
+        try {
+            ok = led_.connect(address);
+        } catch (...) {
+            ok = false;
+        }
+        if (!stopping_) PostMessageW(hwnd_, WM_APP + 4, ok ? 1 : 0, 0);
+    });
+}
+
+void WinApp::handleReconnectResult(bool ok) {
+    if (connectThread_.joinable()) connectThread_.join();
+    connectInFlight_ = false;
+    connected_ = ok;
+    if (ok) {
+        reconnectFailures_ = 0;
+        nextReconnectTime_ = {};
+        appendLog(L"Reconnected to BJ_LED");
+        requestWrite(selectedOutputColor(frameAnalysis_.output), true);
+    } else {
+        appendLog(L"Reconnect failed");
+        scheduleReconnect();
+    }
 }
 
 const wchar_t* WinApp::modeTitle() const {

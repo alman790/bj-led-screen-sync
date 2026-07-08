@@ -19,6 +19,7 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -61,6 +62,12 @@ private:
     void cycleMode();
     bj::RGB selectedOutputColor(bj::RGB autoColor) const;
     void setOutputMode(int mode);
+    void requestWrite(bj::RGB color, bool force);
+    void startWriteWorker(bj::RGB color, int maxChannel);
+    void handleWriteResult(bool ok);
+    void scheduleReconnect();
+    void maybeReconnect();
+    void handleReconnectResult(bool ok);
     const wchar_t* modeTitle() const;
 
     HINSTANCE instance_ = nullptr;
@@ -93,9 +100,12 @@ private:
     bj::ColorAnalyzer analyzer_;
     bj::RGB smoothed_;
     bj::RGB lastSent_;
+    int lastSentMaxChannel_ = 255;
     bj::FrameAnalysis frameAnalysis_;
     std::chrono::steady_clock::time_point lastWriteTime_ {};
+    std::chrono::steady_clock::time_point nextReconnectTime_ {};
     bool hasSmoothed_ = false;
+    bool forceWrite_ = false;
     int outputMode_ = 0;
     bool connected_ = false;
     bool deviceFound_ = false;
@@ -107,6 +117,12 @@ private:
     std::atomic_bool stopping_ {false};
     std::thread connectThread_;
     std::thread writeThread_;
+    std::mutex writeMutex_;
+    bj::RGB desiredWrite_;
+    int desiredMaxChannel_ = 255;
+    bool hasDesiredWrite_ = false;
+    bool pendingWrite_ = false;
+    int reconnectFailures_ = 0;
     GdiScreenCapture* capture_ = nullptr;
     WinBleLed led_;
     std::wstring deviceLabel_ = L"No device yet";

@@ -1,8 +1,8 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
-#include <mutex>
 
 #include "lib/bj_core.hpp"
 
@@ -18,7 +18,7 @@ public:
     bool connect(const std::string& address);
     bool connect(const BlueZDeviceInfo& device);
     bool isReady() const;
-    void write(bj::RGB color, int maxChannel);
+    bool write(bj::RGB color, int maxChannel);
     static std::vector<BlueZDeviceInfo> scan(int timeoutMs = 6000, int limit = 12);
 
 private:

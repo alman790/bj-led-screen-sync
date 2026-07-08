@@ -316,12 +316,20 @@ private:
                 if (contains(outputRects_[i], x, y)) {
                     outputMode_ = i;
                     hasSmoothed_ = false;
+                    forceWrite_ = true;
+                    requestWrite(selectedOutputColor(outputMode_, frame_.output), true);
                     draw();
                     return;
                 }
             }
-            if (contains(max127Rect_, x, y)) settings_.maxChannel = 127;
-            if (contains(max255Rect_, x, y)) settings_.maxChannel = 255;
+            if (contains(max127Rect_, x, y) && settings_.maxChannel != 127) {
+                settings_.maxChannel = 127;
+                requestWrite(selectedOutputColor(outputMode_, frame_.output), true);
+            }
+            if (contains(max255Rect_, x, y) && settings_.maxChannel != 255) {
+                settings_.maxChannel = 255;
+                requestWrite(selectedOutputColor(outputMode_, frame_.output), true);
+            }
             if (contains(deviceRect_, x, y)) appendLog(address_.empty() ? "No scanned device yet" : "BJ_LED selected");
             if (contains(displayRect_, x, y)) appendLog("Capturing the X11 virtual desktop");
             if (contains(modeRect_, x, y)) cycleMode();
@@ -353,6 +361,7 @@ private:
             settings_.threshold = slider.value;
         }
         hasSmoothed_ = false;
+        forceWrite_ = true;
     }
 
     void cycleMode() {
@@ -369,10 +378,12 @@ private:
                 break;
         }
         hasSmoothed_ = false;
+        forceWrite_ = true;
     }
 
     void tick() {
         if (stopping_) return;
+        maybeReconnect();
         auto pixels = capture_.capture();
         frame_ = analyzer_.analyzeFrame(pixels, settings_.sampleWidth, settings_.sampleHeight, settings_);
         const bj::RGB target = selectedOutputColor(outputMode_, frame_.output);
@@ -380,21 +391,12 @@ private:
         hasSmoothed_ = true;
         const auto now = std::chrono::steady_clock::now();
         const bool forceRefresh = now - lastWriteTime_ >= std::chrono::milliseconds(750);
-        const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
+        const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold || lastSentMaxChannel_ != settings_.maxChannel;
         const bool writeWindowOpen = now - lastWriteTime_ >= std::chrono::milliseconds(180);
-        if (led_.isReady() && writeWindowOpen && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
-            if (writeThread_.joinable()) writeThread_.join();
-            const bj::RGB color = smoothed_;
-            const int maxChannel = settings_.maxChannel;
-            lastSent_ = color;
-            lastWriteTime_ = now;
-            writeThread_ = std::thread([this, color, maxChannel] {
-                try {
-                    if (!stopping_) led_.write(color, maxChannel);
-                } catch (...) {
-                }
-                writeInFlight_ = false;
-            });
+        if (led_.isReady() && !connectInFlight_ && writeWindowOpen && (forceWrite_ || colorChanged || forceRefresh)) {
+            const bool force = forceWrite_;
+            forceWrite_ = false;
+            requestWrite(smoothed_, force);
         }
     }
 
@@ -402,6 +404,101 @@ private:
         if (scanThread_.joinable()) scanThread_.join();
         if (connectThread_.joinable()) connectThread_.join();
         if (writeThread_.joinable()) writeThread_.join();
+    }
+
+    void requestWrite(bj::RGB color, bool force) {
+        if (stopping_ || !led_.isReady()) return;
+        const int maxChannel = settings_.maxChannel;
+        {
+            std::lock_guard<std::mutex> lock(writeMutex_);
+            desiredWrite_ = color;
+            desiredMaxChannel_ = maxChannel;
+            hasDesiredWrite_ = true;
+            if (writeInFlight_) {
+                pendingWrite_ = true;
+                return;
+            }
+        }
+        if (!force && bj::distance(lastSent_, color) < settings_.threshold && lastSentMaxChannel_ == maxChannel) return;
+        startWriteWorker(color, maxChannel);
+    }
+
+    void startWriteWorker(bj::RGB color, int maxChannel) {
+        if (stopping_ || writeInFlight_.exchange(true)) {
+            std::lock_guard<std::mutex> lock(writeMutex_);
+            pendingWrite_ = true;
+            return;
+        }
+        if (writeThread_.joinable()) writeThread_.join();
+        lastSent_ = color;
+        lastSentMaxChannel_ = maxChannel;
+        lastWriteTime_ = std::chrono::steady_clock::now();
+        writeThread_ = std::thread([this, color, maxChannel] {
+            bool ok = false;
+            try {
+                ok = !stopping_ && led_.write(color, maxChannel);
+            } catch (...) {
+                ok = false;
+            }
+            std::lock_guard<std::mutex> lock(workerMutex_);
+            pendingWriteReady_ = true;
+            pendingWriteOk_ = ok;
+        });
+    }
+
+    void handleWriteResult(bool ok) {
+        if (writeThread_.joinable()) writeThread_.join();
+        writeInFlight_ = false;
+        if (!ok) {
+            connected_ = false;
+            appendLog("Write failed, reconnecting");
+            scheduleReconnect();
+        }
+        bj::RGB color;
+        int maxChannel = 255;
+        bool sendPending = false;
+        {
+            std::lock_guard<std::mutex> lock(writeMutex_);
+            sendPending = ok && pendingWrite_ && hasDesiredWrite_;
+            color = desiredWrite_;
+            maxChannel = desiredMaxChannel_;
+            pendingWrite_ = false;
+        }
+        if (sendPending && led_.isReady()) startWriteWorker(color, maxChannel);
+    }
+
+    void scheduleReconnect() {
+        if (address_.empty()) return;
+        const int delays[] {500, 1000, 2000, 5000};
+        const int index = std::min(reconnectFailures_, 3);
+        nextReconnectTime_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(delays[index]);
+        reconnectFailures_ = std::min(reconnectFailures_ + 1, 3);
+    }
+
+    void maybeReconnect() {
+        if (address_.empty() || connected_ || connectInFlight_ || stopping_) return;
+        if (nextReconnectTime_.time_since_epoch().count() == 0) return;
+        if (std::chrono::steady_clock::now() < nextReconnectTime_) return;
+        if (connectThread_.joinable()) connectThread_.join();
+        appendLog("Reconnecting to BJ_LED...");
+        connectInFlight_ = true;
+        const std::string address = address_;
+        const BlueZDeviceInfo selected = selectedDevice_;
+        connectThread_ = std::thread([this, address, selected] {
+            bool ok = false;
+            try {
+                ok = selected.objectPath.empty() ? led_.connect(address) : led_.connect(selected);
+            } catch (...) {
+                ok = false;
+            }
+            {
+                std::lock_guard<std::mutex> lock(workerMutex_);
+                pendingConnectReady_ = true;
+                pendingConnected_ = ok;
+                pendingReconnect_ = true;
+            }
+            connectInFlight_ = false;
+        });
     }
 
     void scanDevices() {
@@ -470,6 +567,9 @@ private:
         BlueZDeviceInfo scanDevice;
         bool connectReady = false;
         bool connectOk = false;
+        bool writeReady = false;
+        bool writeOk = false;
+        bool reconnect = false;
         {
             std::lock_guard<std::mutex> lock(workerMutex_);
             scanReady = pendingScanReady_;
@@ -477,8 +577,13 @@ private:
             scanDevice = pendingScanDevice_;
             connectReady = pendingConnectReady_;
             connectOk = pendingConnected_;
+            reconnect = pendingReconnect_;
+            writeReady = pendingWriteReady_;
+            writeOk = pendingWriteOk_;
             pendingScanReady_ = false;
             pendingConnectReady_ = false;
+            pendingReconnect_ = false;
+            pendingWriteReady_ = false;
         }
         if (scanReady) {
             if (scanFound) {
@@ -490,9 +595,22 @@ private:
                 appendLog("BJ_LED not found over BlueZ LE scan");
             }
         }
+        if (writeReady) {
+            handleWriteResult(writeOk);
+        }
         if (connectReady) {
+            if (connectThread_.joinable()) connectThread_.join();
             connected_ = connectOk;
-            appendLog(connected_ ? "Strip ready, live writing enabled" : "Could not connect to BJ_LED");
+            if (connected_) {
+                reconnectFailures_ = 0;
+                nextReconnectTime_ = {};
+                forceWrite_ = true;
+                appendLog(reconnect ? "Reconnected to BJ_LED" : "Strip ready, live writing enabled");
+                requestWrite(selectedOutputColor(outputMode_, frame_.output), true);
+            } else {
+                appendLog(reconnect ? "Reconnect failed" : "Could not connect to BJ_LED");
+                if (reconnect) scheduleReconnect();
+            }
         }
     }
 
@@ -505,8 +623,11 @@ private:
     bj::FrameAnalysis frame_;
     bj::RGB smoothed_;
     bj::RGB lastSent_;
+    int lastSentMaxChannel_ = 255;
     std::chrono::steady_clock::time_point lastWriteTime_ {};
+    std::chrono::steady_clock::time_point nextReconnectTime_ {};
     bool hasSmoothed_ = false;
+    bool forceWrite_ = false;
     bool connected_ = false;
     std::atomic_bool writeInFlight_ {false};
     std::atomic_bool scanInFlight_ {false};
@@ -515,12 +636,21 @@ private:
     std::thread scanThread_;
     std::thread connectThread_;
     std::thread writeThread_;
+    std::mutex writeMutex_;
+    bj::RGB desiredWrite_;
+    int desiredMaxChannel_ = 255;
+    bool hasDesiredWrite_ = false;
+    bool pendingWrite_ = false;
+    int reconnectFailures_ = 0;
     std::mutex workerMutex_;
     bool pendingScanReady_ = false;
     bool pendingScanFound_ = false;
     BlueZDeviceInfo pendingScanDevice_;
     bool pendingConnectReady_ = false;
     bool pendingConnected_ = false;
+    bool pendingReconnect_ = false;
+    bool pendingWriteReady_ = false;
+    bool pendingWriteOk_ = false;
     int outputMode_ = 0;
     int modeIndex_ = 0;
     int activeSlider_ = -1;

@@ -16,10 +16,12 @@
 #include <winrt/base.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cwchar>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -85,6 +87,40 @@ static bool isBjLedCharacteristic(winrt::guid uuid) {
         && uuid.Data4[5] == 0x9b
         && uuid.Data4[6] == 0x34
         && uuid.Data4[7] == 0xfb;
+}
+
+static bool writeWinrtWithTimeout(
+    winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic characteristic,
+    winrt::Windows::Storage::Streams::IBuffer buffer,
+    winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteOption option,
+    std::chrono::milliseconds timeout) {
+    namespace gatt = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
+    struct State {
+        std::promise<bool> promise;
+        std::atomic_bool done {false};
+    };
+    auto state = std::make_shared<State>();
+    auto future = state->promise.get_future();
+    auto operation = characteristic.WriteValueWithResultAsync(buffer, option);
+    operation.Completed([state](auto async, auto status) {
+        bool ok = false;
+        if (status == winrt::Windows::Foundation::AsyncStatus::Completed) {
+            try {
+                ok = async.GetResults().Status() == gatt::GattCommunicationStatus::Success;
+            } catch (...) {
+                ok = false;
+            }
+        }
+        if (!state->done.exchange(true)) state->promise.set_value(ok);
+    });
+    if (future.wait_for(timeout) != std::future_status::ready) {
+        try {
+            operation.Cancel();
+        } catch (...) {
+        }
+        if (!state->done.exchange(true)) state->promise.set_value(false);
+    }
+    return future.get();
 }
 
 static std::string narrowAscii(const winrt::hstring& text) {
@@ -595,43 +631,61 @@ bool WinBleLed::isReady() const {
     return ready_;
 }
 
-void WinBleLed::write(bj::RGB color, int maxChannel) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!ready_ || !characteristic_) return;
+bool WinBleLed::write(bj::RGB color, int maxChannel) {
     std::array<uint8_t, 8> packet = bj::colorPacket(color, maxChannel);
-    if (characteristic_->usesWinrt) {
+    bool usesWinrt = false;
+    HANDLE nativeDevice = INVALID_HANDLE_VALUE;
+    BTH_LE_GATT_CHARACTERISTIC nativeCharacteristic {};
+    winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic winrtCharacteristic {nullptr};
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_ || !characteristic_) return false;
+        usesWinrt = characteristic_->usesWinrt;
+        nativeDevice = device_;
+        nativeCharacteristic = characteristic_->value;
+        winrtCharacteristic = characteristic_->winrtCharacteristic;
+    }
+
+    bool written = false;
+    if (usesWinrt) {
         try {
             namespace gatt = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
-            winrt::Windows::Storage::Streams::DataWriter writer;
-            writer.WriteBytes(winrt::array_view<const uint8_t>(packet.data(), packet.data() + packet.size()));
-            auto buffer = writer.DetachBuffer();
-            bool written = false;
+            if (!winrtCharacteristic) return false;
+            auto makeBuffer = [&packet]() {
+                winrt::Windows::Storage::Streams::DataWriter writer;
+                writer.WriteBytes(winrt::array_view<const uint8_t>(packet.data(), packet.data() + packet.size()));
+                return writer.DetachBuffer();
+            };
             try {
-                auto result = characteristic_->winrtCharacteristic.WriteValueWithResultAsync(buffer, gatt::GattWriteOption::WriteWithResponse).get();
-                written = result.Status() == gatt::GattCommunicationStatus::Success;
+                written = writeWinrtWithTimeout(winrtCharacteristic, makeBuffer(), gatt::GattWriteOption::WriteWithoutResponse, std::chrono::milliseconds(1000));
             } catch (...) {
                 written = false;
             }
             if (!written) {
-                auto result = characteristic_->winrtCharacteristic.WriteValueWithResultAsync(buffer, gatt::GattWriteOption::WriteWithoutResponse).get();
-                written = result.Status() == gatt::GattCommunicationStatus::Success;
+                written = writeWinrtWithTimeout(winrtCharacteristic, makeBuffer(), gatt::GattWriteOption::WriteWithResponse, std::chrono::milliseconds(1500));
             }
-            ready_ = written;
         } catch (const winrt::hresult_error&) {
-            ready_ = false;
+            written = false;
         } catch (...) {
-            ready_ = false;
+            written = false;
         }
-        return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        ready_ = written;
+        return written;
     }
 
-    if (device_ == INVALID_HANDLE_VALUE) return;
+    if (nativeDevice == INVALID_HANDLE_VALUE) return false;
     std::vector<unsigned char> buffer(sizeof(BTH_LE_GATT_CHARACTERISTIC_VALUE) + packet.size() - 1);
     auto* value = reinterpret_cast<BTH_LE_GATT_CHARACTERISTIC_VALUE*>(buffer.data());
     value->DataSize = ULONG(packet.size());
     std::copy(packet.begin(), packet.end(), value->Data);
-    const HRESULT hr = BluetoothGATTSetCharacteristicValue(device_, &characteristic_->value, value, 0, BLUETOOTH_GATT_FLAG_NONE);
-    if (FAILED(hr)) ready_ = false;
+    const HRESULT hr = BluetoothGATTSetCharacteristicValue(nativeDevice, &nativeCharacteristic, value, 0, BLUETOOTH_GATT_FLAG_NONE);
+    written = SUCCEEDED(hr);
+    if (!written) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (device_ == nativeDevice) ready_ = false;
+    }
+    return written;
 }
 
 std::vector<WinBleDeviceInfo> WinBleLed::scan(int timeoutMs, int limit) {

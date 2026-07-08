@@ -265,7 +265,7 @@ std::string findEe01Characteristic(DBusConnection* connection, const std::string
     return found;
 }
 
-bool writeGattValue(DBusConnection* connection, const std::string& characteristicPath, const std::array<uint8_t, 8>& packet, const char* type) {
+bool writeGattValue(DBusConnection* connection, const std::string& characteristicPath, const std::array<uint8_t, 8>& packet, const char* type, int timeoutMs) {
     DBusMessage* message = dbus_message_new_method_call(bluezService, characteristicPath.c_str(), "org.bluez.GattCharacteristic1", "WriteValue");
     if (!message) return false;
     DBusMessageIter root;
@@ -289,7 +289,7 @@ bool writeGattValue(DBusConnection* connection, const std::string& characteristi
     dbus_message_iter_close_container(&root, &dict);
 
     DbusError error;
-    DBusMessage* reply = dbus_connection_send_with_reply_and_block(connection, message, 4000, &error.value);
+    DBusMessage* reply = dbus_connection_send_with_reply_and_block(connection, message, timeoutMs, &error.value);
     dbus_message_unref(message);
     if (reply) {
         dbus_message_unref(reply);
@@ -386,16 +386,24 @@ bool BlueZLed::isReady() const {
     return ready_ && !characteristicPath_.empty();
 }
 
-void BlueZLed::write(bj::RGB color, int maxChannel) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!ready_ || characteristicPath_.empty()) return;
-    DBusConnection* connection = systemBus();
-    if (!connection) return;
-    const auto packet = bj::colorPacket(color, maxChannel);
-    if (!writeGattValue(connection, characteristicPath_, packet, "request")) {
-        if (!writeGattValue(connection, characteristicPath_, packet, "command")) {
-            ready_ = false;
-            std::cerr << "BlueZ write failed for " << address_ << '\n';
-        }
+bool BlueZLed::write(bj::RGB color, int maxChannel) {
+    std::string characteristicPath;
+    std::string address;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_ || characteristicPath_.empty()) return false;
+        characteristicPath = characteristicPath_;
+        address = address_;
     }
+    DBusConnection* connection = systemBus();
+    if (!connection) return false;
+    const auto packet = bj::colorPacket(color, maxChannel);
+    bool written = writeGattValue(connection, characteristicPath, packet, "command", 800);
+    if (!written) written = writeGattValue(connection, characteristicPath, packet, "request", 1400);
+    if (!written) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (characteristicPath_ == characteristicPath) ready_ = false;
+        std::cerr << "BlueZ write failed for " << address << '\n';
+    }
+    return written;
 }
