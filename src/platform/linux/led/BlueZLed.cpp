@@ -318,15 +318,26 @@ std::vector<BlueZDeviceInfo> BlueZLed::scan(int timeoutMs, int limit) {
 }
 
 bool BlueZLed::connect(const BlueZDeviceInfo& device) {
-    disconnect();
+    std::lock_guard<std::mutex> lock(mutex_);
+    disconnectUnlocked();
     address_ = device.address;
     objectPath_ = device.objectPath;
-    if (objectPath_.empty()) return connect(address_);
-    return resolveCharacteristic();
+    if (objectPath_.empty()) {
+        DBusConnection* connection = systemBus();
+        if (!connection) return false;
+        auto devices = managedDevices(connection, false);
+        auto match = std::find_if(devices.begin(), devices.end(), [&](const BlueZDeviceInfo& candidate) {
+            return candidate.address == address_;
+        });
+        if (match == devices.end()) return false;
+        objectPath_ = match->objectPath;
+    }
+    return resolveCharacteristicUnlocked();
 }
 
 bool BlueZLed::connect(const std::string& address) {
-    disconnect();
+    std::lock_guard<std::mutex> lock(mutex_);
+    disconnectUnlocked();
     address_ = address;
     DBusConnection* connection = systemBus();
     if (!connection) return false;
@@ -336,10 +347,15 @@ bool BlueZLed::connect(const std::string& address) {
     });
     if (match == devices.end()) return false;
     objectPath_ = match->objectPath;
-    return resolveCharacteristic();
+    return resolveCharacteristicUnlocked();
 }
 
 bool BlueZLed::resolveCharacteristic() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return resolveCharacteristicUnlocked();
+}
+
+bool BlueZLed::resolveCharacteristicUnlocked() {
     ready_ = false;
     DBusConnection* connection = systemBus();
     if (!connection || objectPath_.empty()) return false;
@@ -356,16 +372,23 @@ bool BlueZLed::resolveCharacteristic() {
 }
 
 void BlueZLed::disconnect() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    disconnectUnlocked();
+}
+
+void BlueZLed::disconnectUnlocked() {
     ready_ = false;
     characteristicPath_.clear();
 }
 
 bool BlueZLed::isReady() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return ready_ && !characteristicPath_.empty();
 }
 
 void BlueZLed::write(bj::RGB color, int maxChannel) {
-    if (!isReady()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ready_ || characteristicPath_.empty()) return;
     DBusConnection* connection = systemBus();
     if (!connection) return;
     const auto packet = bj::colorPacket(color, maxChannel);

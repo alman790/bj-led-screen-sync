@@ -340,6 +340,11 @@ WinBleLed::~WinBleLed() {
 }
 
 void WinBleLed::close() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    closeUnlocked();
+}
+
+void WinBleLed::closeUnlocked() {
     ready_ = false;
     delete characteristic_;
     characteristic_ = nullptr;
@@ -364,7 +369,8 @@ bool WinBleLed::connect(const wchar_t* address) {
 }
 
 bool WinBleLed::connect(uint64_t address) {
-    close();
+    std::lock_guard<std::mutex> lock(mutex_);
+    closeUnlocked();
     if (!address) return false;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -391,16 +397,23 @@ bool WinBleLed::connect(uint64_t address) {
             }
         }
     } catch (const winrt::hresult_error&) {
-        close();
+        closeUnlocked();
+        return false;
+    } catch (...) {
+        closeUnlocked();
         return false;
     }
-    close();
+    closeUnlocked();
     return false;
 }
 
 bool WinBleLed::connectKnownGattDevice() {
-    close();
+    std::lock_guard<std::mutex> lock(mutex_);
+    return connectKnownGattDeviceUnlocked();
+}
 
+bool WinBleLed::connectKnownGattDeviceUnlocked() {
+    closeUnlocked();
     HDEVINFO deviceInfo = SetupDiGetClassDevsW(
         &GUID_BLUETOOTHLE_DEVICE_INTERFACE,
         nullptr,
@@ -474,10 +487,12 @@ bool WinBleLed::connectKnownGattDevice() {
 }
 
 bool WinBleLed::isReady() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return ready_;
 }
 
 void WinBleLed::write(bj::RGB color, int maxChannel) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!ready_ || !characteristic_) return;
     std::array<uint8_t, 8> packet = bj::colorPacket(color, maxChannel);
     if (characteristic_->usesWinrt) {
@@ -492,6 +507,8 @@ void WinBleLed::write(bj::RGB color, int maxChannel) {
             }
         } catch (const winrt::hresult_error&) {
             ready_ = false;
+        } catch (...) {
+            ready_ = false;
         }
         return;
     }
@@ -501,7 +518,8 @@ void WinBleLed::write(bj::RGB color, int maxChannel) {
     auto* value = reinterpret_cast<BTH_LE_GATT_CHARACTERISTIC_VALUE*>(buffer.data());
     value->DataSize = ULONG(packet.size());
     std::copy(packet.begin(), packet.end(), value->Data);
-    BluetoothGATTSetCharacteristicValue(device_, &characteristic_->value, value, 0, BLUETOOTH_GATT_FLAG_NONE);
+    const HRESULT hr = BluetoothGATTSetCharacteristicValue(device_, &characteristic_->value, value, 0, BLUETOOTH_GATT_FLAG_NONE);
+    if (FAILED(hr)) ready_ = false;
 }
 
 std::vector<WinBleDeviceInfo> WinBleLed::scan(int timeoutMs, int limit) {

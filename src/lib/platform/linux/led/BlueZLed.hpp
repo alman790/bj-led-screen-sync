@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <mutex>
 
 #include "lib/bj_core.hpp"
 
@@ -22,8 +23,11 @@ public:
 
 private:
     bool resolveCharacteristic();
+    bool resolveCharacteristicUnlocked();
     void disconnect();
+    void disconnectUnlocked();
 
+    mutable std::mutex mutex_;
     std::string address_;
     std::string objectPath_;
     std::string characteristicPath_;

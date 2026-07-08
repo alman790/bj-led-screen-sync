@@ -171,6 +171,8 @@ public:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(3));
         }
+        stopping_ = true;
+        joinWrite();
         if (backbuffer_) XFreePixmap(display_, backbuffer_);
         if (gc_) XFreeGC(display_, gc_);
         XCloseDisplay(display_);
@@ -367,6 +369,7 @@ private:
     }
 
     void tick() {
+        if (stopping_) return;
         auto pixels = capture_.capture();
         frame_ = analyzer_.analyzeFrame(pixels, settings_.sampleWidth, settings_.sampleHeight, settings_);
         const bj::RGB target = selectedOutputColor(outputMode_, frame_.output);
@@ -377,15 +380,23 @@ private:
         const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
         const bool writeWindowOpen = now - lastWriteTime_ >= std::chrono::milliseconds(180);
         if (led_.isReady() && writeWindowOpen && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
+            if (writeThread_.joinable()) writeThread_.join();
             const bj::RGB color = smoothed_;
             const int maxChannel = settings_.maxChannel;
             lastSent_ = color;
             lastWriteTime_ = now;
-            std::thread([this, color, maxChannel] {
-                led_.write(color, maxChannel);
+            writeThread_ = std::thread([this, color, maxChannel] {
+                try {
+                    if (!stopping_) led_.write(color, maxChannel);
+                } catch (...) {
+                }
                 writeInFlight_ = false;
-            }).detach();
+            });
         }
+    }
+
+    void joinWrite() {
+        if (writeThread_.joinable()) writeThread_.join();
     }
 
     void scanDevices() {
@@ -424,6 +435,8 @@ private:
     bool hasSmoothed_ = false;
     bool connected_ = false;
     std::atomic_bool writeInFlight_ {false};
+    std::atomic_bool stopping_ {false};
+    std::thread writeThread_;
     int outputMode_ = 0;
     int modeIndex_ = 0;
     int activeSlider_ = -1;

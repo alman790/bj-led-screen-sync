@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cwchar>
 #include <memory>
-#include <thread>
 
 #include "platform/windows/resource.h"
 
@@ -170,16 +169,21 @@ LRESULT WinApp::windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             ReleaseCapture();
             break;
         case WM_TIMER:
-            tick();
+            if (!stopping_) tick();
             break;
         case WM_ERASEBKGND:
             return 1;
         case WM_APP + 1:
+            if (stopping_) break;
             connected_ = wparam != 0;
             appendLog(wparam ? L"Strip ready, live writing enabled" : L"BJ_LED service not found");
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
         case WM_APP + 2: {
+            if (stopping_) {
+                delete reinterpret_cast<WinBleDeviceInfo*>(lparam);
+                break;
+            }
             std::unique_ptr<WinBleDeviceInfo> device(reinterpret_cast<WinBleDeviceInfo*>(lparam));
             deviceFound_ = device && device->address != 0;
             selectedAddress_ = deviceFound_ ? device->address : 0;
@@ -412,31 +416,43 @@ void WinApp::handlePointer(int x, int y, bool pressed) {
                 cycleMode();
             }
             if (contains(scanRect_, x, y) && !scanInFlight_.exchange(true)) {
+                if (scanThread_.joinable()) scanThread_.join();
                 deviceLabel_ = L"Scanning...";
                 selectedAddress_ = 0;
                 appendLog(L"BLE scan started");
-                std::thread([this] {
-                    auto devices = WinBleLed::scan();
-                    auto selected = std::make_unique<WinBleDeviceInfo>();
-                    if (!devices.empty()) {
-                        *selected = devices.front();
+                scanThread_ = std::thread([this] {
+                    std::unique_ptr<WinBleDeviceInfo> selected(new WinBleDeviceInfo());
+                    try {
+                        auto devices = WinBleLed::scan();
+                        if (!devices.empty()) {
+                            *selected = devices.front();
+                        }
+                    } catch (...) {
                     }
                     scanInFlight_ = false;
+                    if (stopping_) return;
                     PostMessageW(hwnd_, WM_APP + 2, selected->address ? 1 : 0, reinterpret_cast<LPARAM>(selected.release()));
-                }).detach();
+                });
             }
             if (contains(connectRect_, x, y) && !connectInFlight_.exchange(true)) {
-                if (selectedAddress_) {
+                if (connectThread_.joinable()) connectThread_.join();
+                const uint64_t address = selectedAddress_;
+                if (address) {
                     appendLog(L"Connecting by BLE address...");
                 } else {
                     appendLog(L"Connecting through known Windows GATT devices...");
                 }
-                std::thread([this] {
-                    const uint64_t address = selectedAddress_;
-                    const bool ok = address ? led_.connect(address) : led_.connect(nullptr);
+                connectThread_ = std::thread([this, address] {
+                    bool ok = false;
+                    try {
+                        ok = address ? led_.connect(address) : led_.connect(nullptr);
+                    } catch (...) {
+                        ok = false;
+                    }
                     connectInFlight_ = false;
+                    if (stopping_) return;
                     PostMessageW(hwnd_, WM_APP + 1, ok ? 1 : 0, 0);
-                }).detach();
+                });
             }
     } else if (activeSlider_ >= 0) {
         updateSlider(x);
@@ -457,7 +473,7 @@ void WinApp::updateSlider(int x) {
         settings_.fps = std::clamp(int(slider.value + 0.5f), 1, 30);
         slider.value = float(settings_.fps);
         KillTimer(hwnd_, 1);
-        SetTimer(hwnd_, 1, std::max(8, 1000 / settings_.fps), nullptr);
+        if (!stopping_) SetTimer(hwnd_, 1, std::max(8, 1000 / settings_.fps), nullptr);
     } else if (activeSlider_ == 1) {
         settings_.brightness = slider.value;
     } else if (activeSlider_ == 2) {
@@ -487,19 +503,39 @@ void WinApp::cycleMode() {
     hasSmoothed_ = false;
 }
 
+void WinApp::joinWorkers() {
+    if (scanThread_.joinable()) scanThread_.join();
+    if (connectThread_.joinable()) connectThread_.join();
+    if (writeThread_.joinable()) writeThread_.join();
+}
+
 void WinApp::stop() {
+    stopping_ = true;
     KillTimer(hwnd_, 1);
+    joinWorkers();
     destroyBackbuffer();
     delete capture_;
     capture_ = nullptr;
-    if (titleFont_) DeleteObject(titleFont_);
-    if (labelFont_) DeleteObject(labelFont_);
-    if (textFont_) DeleteObject(textFont_);
-    if (monoFont_) DeleteObject(monoFont_);
+    if (titleFont_) {
+        DeleteObject(titleFont_);
+        titleFont_ = nullptr;
+    }
+    if (labelFont_) {
+        DeleteObject(labelFont_);
+        labelFont_ = nullptr;
+    }
+    if (textFont_) {
+        DeleteObject(textFont_);
+        textFont_ = nullptr;
+    }
+    if (monoFont_) {
+        DeleteObject(monoFont_);
+        monoFont_ = nullptr;
+    }
 }
 
 void WinApp::tick() {
-    if (!capture_ || movingWindow_) return;
+    if (stopping_ || !capture_ || movingWindow_) return;
     auto pixels = capture_->capture();
     frameAnalysis_ = analyzer_.analyzeFrame(pixels, settings_.sampleWidth, settings_.sampleHeight, settings_);
     bj::RGB color = selectedOutputColor(frameAnalysis_.output);
@@ -512,14 +548,18 @@ void WinApp::tick() {
     const bool colorChanged = bj::distance(lastSent_, smoothed_) >= settings_.threshold;
     const bool writeWindowOpen = now - lastWriteTime_ >= std::chrono::milliseconds(90);
     if (led_.isReady() && !connectInFlight_ && writeWindowOpen && (colorChanged || forceRefresh) && !writeInFlight_.exchange(true)) {
+        if (writeThread_.joinable()) writeThread_.join();
         const bj::RGB color = smoothed_;
         const int maxChannel = settings_.maxChannel;
         lastSent_ = color;
         lastWriteTime_ = now;
-        std::thread([this, color, maxChannel] {
-            led_.write(color, maxChannel);
+        writeThread_ = std::thread([this, color, maxChannel] {
+            try {
+                if (!stopping_) led_.write(color, maxChannel);
+            } catch (...) {
+            }
             writeInFlight_ = false;
-        }).detach();
+        });
     }
     if (visualChanged) InvalidateRect(hwnd_, nullptr, FALSE);
 }

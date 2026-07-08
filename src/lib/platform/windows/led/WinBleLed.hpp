@@ -14,6 +14,7 @@
 #include "lib/bj_core.hpp"
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -35,8 +36,11 @@ public:
 
 private:
     void close();
+    void closeUnlocked();
     bool connectKnownGattDevice();
+    bool connectKnownGattDeviceUnlocked();
 
+    mutable std::mutex mutex_;
     bool ready_ = false;
     HANDLE device_ = INVALID_HANDLE_VALUE;
     struct CharacteristicStorage;
